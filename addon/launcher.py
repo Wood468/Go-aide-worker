@@ -50,6 +50,17 @@ def read_options(path=OPTIONS):
     return action, prompt, enabled, api_key, publish_enabled, github_token
 
 
+def protect_options(path=OPTIONS):
+    """Keep raw Home Assistant credentials unreadable by the coder user."""
+    if path.is_symlink() or not path.is_file():
+        raise ConfigurationError("Unsafe options file")
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o600)
+    info = path.stat()
+    if info.st_uid != 0 or (info.st_mode & 0o077) != 0:
+        raise ConfigurationError("Options file is not root-private")
+
+
 def prepare_directory(path=WORKSPACE):
     if path.is_symlink():
         raise ConfigurationError("Unsafe workspace symlink")
@@ -90,6 +101,7 @@ def main():
     if os.geteuid() != 0:
         raise ConfigurationError("Bootstrap requires root solely for UID drop and storage setup")
     action, prompt, enabled, api_key, publish_enabled, github_token = read_options()
+    protect_options()
     prepare_directory()
     if action != "idle":
         stage_job(action, prompt)
