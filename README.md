@@ -12,7 +12,7 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 - Edits require `ENABLE_EDITS=true` and `GEMINI_API_KEY`; no arbitrary shell command input.
 - Prompt limit 3,000 characters, file limit 8 KiB, subprocess timeout 300 seconds.
 - No Home Assistant/Supervisor/Docker APIs, host networking, privileged access or host config mounts.
-- No GitHub credentials, repository clone, push, PR creation, or deployment functionality.
+- A restricted **public GitHub fetch helper** now exists: exact repository allowlist, no credentials, no working-tree checkout. It is not yet wired into the job runner. No push, PR creation, or deployment functionality.
 
 ## Example job format (documentation only)
 ```json
@@ -24,7 +24,7 @@ The job file and a Git checkout must be provisioned in the isolated add-on works
 ## Remaining release gates
 1. Validate Home Assistant add-on metadata, writable `/data` permissions, and full runtime on a disposable instance.
 2. Verify Aider's exact CLI/model support and safe subprocess termination; ensure secrets and prompts cannot appear in logs.
-3. Build a safe job submission, repository checkout and GitHub PR workflow with least-privilege credentials.
+3. Integrate and test the public-repository fetch with an isolated working tree. Private repository authentication and GitHub PR creation are not implemented.
 4. Run disposable-repository end-to-end tests, including timeout, malformed jobs, read-only defaults and security isolation.
 5. Confirm Google AI Studio quotas and user privacy implications.
 
