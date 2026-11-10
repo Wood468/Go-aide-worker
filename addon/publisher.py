@@ -23,6 +23,7 @@ FORBIDDEN_COMPONENTS = {".git", ".github", ".env", "secrets", "credentials", ".s
 MAX_FILES = 10
 MAX_FILE_BYTES = 100_000
 MAX_TOTAL_BYTES = 250_000
+SECRET_MARKERS = (b"-----BEGIN PRIVATE KEY-----", b"github_pat_", b"ghp_", b"gho_", b"AIza")
 
 
 class PublishError(Exception):
@@ -68,7 +69,8 @@ def safe_files(workspace):
                 or rel.startswith("/") or any(part in {"", ".", ".."} for part in rel.split("/"))
                 or any(part.lower() in FORBIDDEN_COMPONENTS for part in rel.split("/"))
                 or any(term in rel.lower() for term in ("token", "password", "secret", "credential", "private_key"))
-                or Path(rel).suffix not in ALLOWED_SUFFIXES):
+                or Path(rel).suffix not in ALLOWED_SUFFIXES
+                or rel == "WORKER_SMOKE_TEST.txt"):
             raise PublishError("Restricted changed path")
         path = workspace / rel
         cursor = workspace
