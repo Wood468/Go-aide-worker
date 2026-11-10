@@ -15,7 +15,7 @@ JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
-ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "probe"}
+ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "probe", "direct_edit"}
 MODEL = "gemini/gemini-3.5-flash-lite"
 
 
@@ -82,7 +82,7 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Unsupported action")
     if not isinstance(prompt, str) or len(prompt) > MAX_PROMPT_CHARS:
         raise JobError("Invalid prompt length")
-    if action == "edit" and not prompt.strip():
+    if action in {"edit", "direct_edit"} and not prompt.strip():
         raise JobError("Edit prompt must not be empty")
     if action == "edit" and os.environ.get("ENABLE_EDITS") != "true":
         raise JobError("Edits disabled; ENABLE_EDITS must be true")
@@ -104,7 +104,7 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Workspace must be a real directory")
     if (workspace / ".git").is_symlink() or not (workspace / ".git").is_dir():
         raise JobError("Workspace must contain a checked-out Git repository")
-    if action == "edit":
+    if action in {"edit", "direct_edit"}:
         selected_edit_files(workspace)
     return action, prompt
 
@@ -120,6 +120,8 @@ def command_for(action, prompt):
         return [sys.executable, "/opt/worker/publisher.py"]
     if action == "probe":
         return [sys.executable, "/opt/worker/gemini_probe.py"]
+    if action == "direct_edit":
+        return [sys.executable, "/opt/worker/direct_editor.py"]
     files = selected_edit_files(WORKSPACE)
     file_args = [arg for file in files for arg in ("--file", file)]
     return [
@@ -186,7 +188,7 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
-    env = dict(os.environ) if action in {"edit", "publish"} else {
+    env = dict(os.environ) if action in {"edit", "direct_edit", "publish"} else {
         key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE")
         if key in os.environ
     }
@@ -203,7 +205,7 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
         process = subprocess.Popen(
             cmd, cwd=workspace.parent if action == "prepare" else workspace,
             stdin=subprocess.DEVNULL,
-            stdout=private_output if action == "edit" else subprocess.DEVNULL,
+            stdout=private_output if action in {"edit", "direct_edit"} else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if action == "edit" else subprocess.DEVNULL,
             start_new_session=True,
             env=env,
