@@ -1,0 +1,26 @@
+name: Prototype validation
+on:
+  pull_request:
+  push:
+    branches:
+      - prototype/isolated-aider-addon
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Static safety tests
+        run: python -m unittest discover -s tests -v
+      - name: Parse Home Assistant add-on YAML
+        run: |
+          python -m pip install PyYAML==6.0.2
+          python -c "import yaml; d=yaml.safe_load(open('addon/config.yaml')); assert d['slug']=='go_aider_worker'; assert d['docker_api'] is False"
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build prototype image (never run with credentials)
+        run: docker build --pull -t go-aider-worker:prototype addon/
