@@ -195,7 +195,7 @@ def recover_pilot(path=LEDGER, fetch=github_read):
     # Check newest first, in five-PR pages small enough for the worker's
     # existing 180 KB untrusted-response limit. Do not relax that cap.
     issued = source_issue.get("created_at") if isinstance(source_issue, dict) else None
-    iso_utc = r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z"
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
     if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
         raise QueueError("Pilot issue creation time unavailable")
     verified_cutoff = False
