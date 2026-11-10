@@ -32,16 +32,45 @@ class CheckoutTests(unittest.TestCase):
             with self.assertRaises(module.CheckoutError):
                 module.checkout("owner/repo", "owner/repo", destination)
 
-    def test_fetch_does_not_checkout_or_prompt(self):
+    def test_fetch_validates_tree_and_checks_out_without_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "workspace"
-            with patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            tree = b"100644 blob abcdef\\tREADME.md\\0"
+            result = subprocess.CompletedProcess([], 0, stdout=tree)
+            with patch.object(module.subprocess, "run", return_value=result) as git:
                 module.checkout("owner/repo", "owner/repo", destination)
-                cmd = run.call_args.args[0]
-                self.assertIn("--no-checkout", cmd)
-                self.assertIn("--depth", cmd)
-                self.assertNotIn("push", cmd)
-                self.assertEqual(run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+                self.assertEqual(git.call_count, 3)
+                clone = git.call_args_list[0].args[0]
+                self.assertIn("--no-checkout", clone)
+                self.assertIn("--depth", clone)
+                self.assertNotIn("push", clone)
+                self.assertEqual(git.call_args_list[0].kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+                self.assertNotIn("GEMINI_API_KEY", git.call_args_list[0].kwargs["env"])
+                self.assertIn("ls-tree", git.call_args_list[1].args[0])
+                self.assertIn("checkout", git.call_args_list[2].args[0])
+
+    def test_rejects_symlinks_and_submodules(self):
+        for mode in (b"120000", b"160000"):
+            with self.subTest(mode=mode), self.assertRaises(module.CheckoutError):
+                module.validate_tree(mode + b" blob abcdef\\tunsafe\\0")
+
+    def test_rejects_reserved_git_paths(self):
+        with self.assertRaises(module.CheckoutError):
+            module.validate_tree(b"100644 blob abcdef\\tdir/.git/config\\0")
+
+    def test_rejects_oversized_tree(self):
+        with self.assertRaises(module.CheckoutError):
+            module.validate_tree(b"x" * (module.MAX_TREE_BYTES + 1))
+
+    def test_git_failure_does_not_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "workspace"
+            ok = subprocess.CompletedProcess([], 0, stdout=b"")
+            failed = subprocess.CompletedProcess([], 1, stdout=b"")
+            with patch.object(module.subprocess, "run", side_effect=[ok, failed]) as git:
+                with self.assertRaises(module.CheckoutError):
+                    module.checkout("owner/repo", "owner/repo", destination)
+                self.assertEqual(git.call_count, 2)
 
 
 if __name__ == "__main__":
