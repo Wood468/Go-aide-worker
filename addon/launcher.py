@@ -14,7 +14,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop"}
+ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_status", "queue_recover_pilot"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -56,6 +56,8 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
+    if action == "queue_recover_pilot" and not queue_enabled:
+        raise ConfigurationError("Pilot recovery requires explicit queue opt-in")
     if action in {"queue_once", "queue_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
         raise ConfigurationError("Queue requires all three opt-ins and both credentials")
     if action == "probe" and not api_key.strip():
@@ -122,7 +124,7 @@ def main():
     action, prompt, enabled, api_key, publish_enabled, github_token, edit_files = read_options()
     protect_options()
     prepare_directory()
-    if action != "idle":
+    if action not in {"idle", "queue_status", "queue_recover_pilot"}:
         stage_job(action, prompt)
     # Set only the environment needed by the unprivileged worker.
     environment = {
@@ -151,6 +153,15 @@ def main():
     os.setgroups([])
     os.setgid(UID)
     os.setuid(UID)
+    if action in {"queue_status", "queue_recover_pilot"}:
+        # Read-only status or one tightly scoped ledger recovery. Neither
+        # receives Gemini/GitHub secrets or any edit/publish permission.
+        import preflight
+        if preflight.check() != 0:
+            raise ConfigurationError("Preflight check failed")
+        mode = "status" if action == "queue_status" else "recover_pilot"
+        os.execve(sys.executable, [sys.executable, "/opt/worker/queue_worker.py", mode],
+                  environment)
     if action == "idle":
         print("GO Aider Worker idle; no job scheduled", flush=True)
         os.execve("/usr/bin/sleep", ["sleep", "infinity"], environment)
