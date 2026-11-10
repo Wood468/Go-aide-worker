@@ -15,7 +15,8 @@ q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 def issue(number=10, author="Wood468", labels=None, path="docs/worker-task-qa-note.md"):
     payload={"path":path,"instruction":"Create a short source-backed QA checklist for this single review-only note."}
-    return {"number":number,"state":"open","title":"[GO-WORKER] Prepare test QA note",
+    return {"number":number,"state":"open","created_at":"2026-11-10T22:01:34Z",
+            "title":"[GO-WORKER] Prepare test QA note",
             "user":{"login":author},
             "labels":[{"name":x} for x in (labels or ["go-worker-approved"])],
             "body":"Reviewed bounded task.\nGO_WORKER_TASK_JSON:"+json.dumps(payload)+"\n"}
@@ -189,6 +190,59 @@ class WorkerQueueTests(unittest.TestCase):
                           ledger)
             with self.assertRaises(q.QueueError):
                 q.recover_pilot(ledger, fetch=lambda *_: self.fail("no remote reads"))
+
+    def test_pilot_recovery_paginates_full_recent_pr_pages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462":{"state":"needs-review","attempts":1}}, ledger)
+            paths = []
+            def fetch(url):
+                paths.append(url)
+                if url.endswith("/issues/462"):
+                    return issue(number=462, path="docs/worker-task-queue-pilot.md")
+                if "page=1" in url:
+                    return [{"title":"Unrelated task", "body":"",
+                             "created_at":"2026-11-10T22:05:00Z"} for _ in range(20)]
+                if "page=2" in url:
+                    return [{"title":"Older unrelated PR", "body":"",
+                             "created_at":"2026-11-09T21:30:00Z"}]
+                self.fail("Unexpected page")
+            self.assertTrue(q.recover_pilot(ledger, fetch=fetch))
+            self.assertEqual(len(paths), 3)
+            self.assertIn("per_page=20&page=2", paths[-1])
+
+    def test_pilot_recovery_rejects_existing_draft_on_second_page(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462":{"state":"needs-review"}}, ledger)
+            def fetch(url):
+                if url.endswith("/issues/462"):
+                    return issue(number=462, path="docs/worker-task-queue-pilot.md")
+                if "page=1" in url:
+                    return [{"title":"Unrelated", "body":"",
+                             "created_at":"2026-11-10T22:05:00Z"} for _ in range(20)]
+                return [{"title":"Worker: issue #462 draft changes",
+                         "body":"Source task: #462",
+                         "created_at":"2026-11-10T22:02:00Z"}]
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=fetch)
+            self.assertEqual(q.read_ledger(ledger)["462"]["state"], "needs-review")
+
+    def test_pilot_recovery_fails_closed_without_bounded_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462":{"state":"needs-review"}}, ledger)
+            pages = []
+            def fetch(url):
+                if url.endswith("/issues/462"):
+                    return issue(number=462, path="docs/worker-task-queue-pilot.md")
+                pages.append(url)
+                return [{"title":"Unrelated", "body":"",
+                         "created_at":"2026-11-10T22:10:00Z"} for _ in range(20)]
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=fetch)
+            self.assertEqual(len(pages), 10)
+            self.assertEqual(q.read_ledger(ledger)["462"]["state"], "needs-review")
 
     def test_second_pilot_failure_cannot_be_recovered_a_third_time(self):
         with tempfile.TemporaryDirectory() as folder:
