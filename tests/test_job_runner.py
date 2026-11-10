@@ -147,7 +147,7 @@ class RestrictedJobs(unittest.TestCase):
             job_file = Path(tmp) / "job.json"
             job_file.write_text(json.dumps(self.job("verify")))
             self.assertEqual(runner.run(job_file, self.workspace), 3)
-            (self.workspace / "WORKER_SMOKE_TEST.txt").write_text("GO Aider Gemini smoke test succeeded\\n")
+            (self.workspace / "WORKER_SMOKE_TEST.txt").write_text("GO Aider Gemini smoke test succeeded\n")
             self.assertEqual(runner.run(job_file, self.workspace), 0)
 
     def test_publish_process_has_no_gemini_credentials(self):
