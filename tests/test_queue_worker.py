@@ -64,6 +64,10 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertFalse(q.has_pending_review({"10":{"state":"submitted","pr":5}},
                                           fetch=lambda url:{"state":"closed"}))
 
+    def test_uncertain_failure_blocks_any_followup_tasks(self):
+        self.assertTrue(q.has_pending_review({"10":{"state":"needs-review"}},
+                         fetch=lambda url:self.fail("No fetch needed")))
+
     def test_no_credentials_in_scanner_environment(self):
         self.assertNotIn("GEMINI_API_KEY",q.child_env())
         self.assertNotIn("GITHUB_TOKEN",q.child_env())
