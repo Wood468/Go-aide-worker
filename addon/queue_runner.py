@@ -157,7 +157,7 @@ def run_task(task, gemini, github, refresh=refresh_repo.refresh, executor=subpro
     work = refresh_repo.SOURCE
     if not work.is_dir() or work.is_symlink():
         raise QueueError("Fresh source checkout absent")
-    edit_env = safe_env() | {"GEMINI_API_KEY": gemini, "EDIT_FILES": task["file"],
+    edit_env = safe_env() | {"PYTHONPATH": "/opt/worker", "GEMINI_API_KEY": gemini, "EDIT_FILES": task["file"],
                              "TASK_PROMPT": task["prompt"]}
     call([sys.executable, "-c", EDIT_ENTRY], edit_env, work, executor=executor)
     verify_changed_file(task, work, checker)
