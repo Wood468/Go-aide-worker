@@ -44,6 +44,11 @@ class DraftPublisher(unittest.TestCase):
         with self.assertRaises(publisher.PublishError):
             publisher.safe_files(self.root)
 
+    def test_rejects_empty_placeholder(self):
+        (self.root / "new_file.txt").write_bytes(b"")
+        with self.assertRaises(publisher.PublishError):
+            publisher.safe_files(self.root)
+
     def test_rejects_secret_named_file(self):
         (self.root / "secret_token.txt").write_text("sample")
         with self.assertRaises(publisher.PublishError):

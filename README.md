@@ -8,6 +8,14 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.3.2: verify actual target-file edits
+
+- If `edit_files` names a new file in an existing checkout directory, safely pre-create an empty regular file so Aider can add it to the editing context.
+- Record hashes of explicitly selected files before and after the Aider run. A zero-exit result is now considered a failure unless at least one intended file's content changed.
+- Temporary empty placeholders cannot be published by the draft-PR publisher.
+- Aider may create its own ignored files; Git working-tree change counts alone are insufficient proof of a useful edit.
+- Editing is still a manual, single-job action. No unattended jobs, automatic merges or production deployments are enabled.
+
 ## v0.3.1: no-op edit diagnostics
 
 The first Gemini/Aider edit job returned process exit code 0 but the verification task found no matching smoke file. Aider works best when given explicit editable file paths; the add-on now has a safe, optional comma-separated `edit_files` field (up to 5 paths), passed as `--file` arguments during an Edit job only. This release keeps raw model/provider output private in an unlinked temporary file, emits only a fixed diagnostic category and changed-path count, and treats a zero-change exit code as failure. The `verify` task distinguishes a missing file from one with incorrect contents. Do not infer a successful code contribution from process exit code alone.

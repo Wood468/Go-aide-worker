@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Single-job, local-only runner with allowlisted public Git preparation."""
 import json
+import hashlib
 import signal
 import os
 import re
@@ -45,6 +46,32 @@ def selected_edit_files(workspace):
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise JobError("Unsafe edit target")
     return paths
+
+
+def initialize_selected_files(workspace, files):
+    """Create only explicitly selected new files so Aider can edit them."""
+    for relative in files:
+        target = workspace / relative
+        if target.is_symlink():
+            raise JobError("Symlink edit target forbidden")
+        if not target.exists():
+            if not target.parent.is_dir() or target.parent.is_symlink():
+                raise JobError("Selected edit parent directory must already exist")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(target, flags, 0o600)
+            os.close(fd)
+
+
+def selected_hashes(workspace, files):
+    """Digest intended targets, never log their contents."""
+    digests = {}
+    for relative in files:
+        path = workspace / relative
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1_000_000:
+            raise JobError("Unsafe or oversized selected file")
+        with path.open("rb") as stream:
+            digests[relative] = hashlib.file_digest(stream, "sha256").digest()
+    return digests
 
 
 def validate_job(raw, workspace=WORKSPACE):
@@ -146,6 +173,12 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
             return 3
         print("Gemini smoke file verified", flush=True)
         return 0
+    files = selected_edit_files(workspace) if action == "edit" else []
+    if files:
+        initialize_selected_files(workspace, files)
+        before = selected_hashes(workspace, files)
+    else:
+        before = {}
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
@@ -183,8 +216,11 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
             category = classify_edit_output(private_output.read(200_000))
             changed = count_changes(workspace)
             print(f"Aider diagnostic: {category}; changed paths: {changed}", flush=True)
-            if return_code == 0 and changed == 0:
-                print("Edit did not produce repository changes", flush=True)
+            target_changes = sum(1 for key, digest in before.items()
+                                 if selected_hashes(workspace, files)[key] != digest) if files else changed
+            print(f"Selected edit targets changed: {target_changes}", flush=True)
+            if return_code == 0 and target_changes == 0:
+                print("Edit did not change intended repository files", flush=True)
                 return 4
     print(f"Job finished with exit code {return_code}", flush=True)
     return return_code

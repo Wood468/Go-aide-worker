@@ -220,6 +220,54 @@ class RestrictedJobs(unittest.TestCase):
             with self.assertRaises(runner.JobError):
                 runner.selected_edit_files(self.workspace)
 
+    def test_explicit_new_target_is_precreated_and_hashed(self):
+        target = self.workspace / "WORKER_SMOKE_TEST.txt"
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}):
+            selected = runner.selected_edit_files(self.workspace)
+            self.assertFalse(target.exists())
+            runner.initialize_selected_files(self.workspace, selected)
+            self.assertEqual(target.read_bytes(), b"")
+            before = runner.selected_hashes(self.workspace, selected)
+            target.write_text("meaningful generated edit\n")
+            after = runner.selected_hashes(self.workspace, selected)
+            self.assertNotEqual(before, after)
+
+    def test_explicit_target_requires_actual_content_change(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("edit", "write the smoke test line")))
+            proc = MagicMock()
+            proc.wait.return_value = 0
+            target = self.workspace / "WORKER_SMOKE_TEST.txt"
+            with (patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt",
+                    "ENABLE_EDITS": "true", "GEMINI_API_KEY": "dummy"}, clear=True),
+                  patch.object(runner.subprocess, "Popen", return_value=proc),
+                  patch.object(runner, "count_changes", return_value=1)):
+                self.assertEqual(runner.run(job, self.workspace), 4)
+                self.assertTrue(target.is_file())
+
+    def test_explicit_target_edit_returns_success_only_when_modified(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("edit", "write the smoke test line")))
+            target = self.workspace / "WORKER_SMOKE_TEST.txt"
+            proc = MagicMock()
+            def write_then_exit(timeout):
+                target.write_text("GO Aider Gemini smoke test succeeded\n")
+                return 0
+            proc.wait.side_effect = write_then_exit
+            with (patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt",
+                    "ENABLE_EDITS": "true", "GEMINI_API_KEY": "dummy"}, clear=True),
+                  patch.object(runner.subprocess, "Popen", return_value=proc),
+                  patch.object(runner, "count_changes", return_value=1)):
+                self.assertEqual(runner.run(job, self.workspace), 0)
+
+    def test_missing_parent_prevents_target_creation(self):
+        with self.assertRaises(runner.JobError):
+            runner.initialize_selected_files(self.workspace, ["nonexistent/sub/file.txt"])
+
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])
