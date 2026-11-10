@@ -31,7 +31,7 @@ def read_options(path=OPTIONS):
     prompt = raw.get("job_prompt", "")
     enabled = raw.get("enable_edits", False)
     api_key = raw.get("gemini_api_key", "")
-    if action not in ACTION_SET or not isinstance(action, str):
+    if not isinstance(action, str) or action not in ACTION_SET:
         raise ConfigurationError("Unsupported action")
     if not isinstance(prompt, str) or len(prompt) > 3000:
         raise ConfigurationError("Invalid prompt")
