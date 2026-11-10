@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """GitHub-approved one-file queue. No arbitrary scripts, merges or deployments."""
 import fcntl
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -187,19 +188,47 @@ def recover_pilot(path=LEDGER, fetch=github_read):
             previous.get("state") not in {"started", "needs-review"} or
             previous.get("attempts", 1) != 1 or "pr" in previous):
         raise QueueError("Pilot recovery not eligible")
-    issue = parse_task(fetch("https://api.github.com/repos/" + REPO + "/issues/" + key))
+    issue_data = fetch("https://api.github.com/repos/" + REPO + "/issues/" + key)
+    issue = parse_task(issue_data)
     if not issue or issue["issue"] != PILOT_ISSUE or issue["path"] != PILOT_PATH:
         raise QueueError("Pilot approval changed")
-    prs = fetch("https://api.github.com/repos/" + REPO +
-                "/pulls?state=all&per_page=100")
-    if not isinstance(prs, list) or len(prs) >= 100:
-        raise QueueError("Cannot exhaustively verify recent worker PRs")
-    for pr in prs:
-        if not isinstance(pr, dict):
-            raise QueueError("Invalid PR history")
-        title, body = str(pr.get("title") or ""), str(pr.get("body") or "")
-        if ("Worker: issue #" + key) in title or ("Source task: #" + key) in body:
-            raise QueueError("Pilot may already have a published draft PR")
+    try:
+        created = datetime.fromisoformat(issue_data["created_at"].replace("Z", "+00:00"))
+        if created.utcoffset() is None:
+            raise ValueError("Missing timezone")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise QueueError("Pilot issue creation time missing") from None
+
+    # Compare all PRs created since the approved task, including closed drafts.
+    # Small pages avoid the 180 KB GitHub response cap; cap page count and
+    # fail closed if history cannot be exhausted. Never rely on one full page.
+    history_complete = False
+    for page in range(1, 11):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=20&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 20:
+            raise QueueError("Invalid PR history page")
+        older_reached = False
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Invalid PR history")
+            title, body = str(pr.get("title") or ""), str(pr.get("body") or "")
+            if ("Worker: issue #" + key) in title or ("Source task: #" + key) in body:
+                raise QueueError("Pilot may already have a published draft PR")
+            try:
+                pr_created = datetime.fromisoformat(pr["created_at"].replace("Z", "+00:00"))
+                if pr_created.utcoffset() is None:
+                    raise ValueError("Missing timezone")
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise QueueError("PR creation time missing") from None
+            if pr_created < created:
+                older_reached = True
+        if older_reached or len(prs) < 20:
+            history_complete = True
+            break
+    if not history_complete:
+        raise QueueError("Cannot exhaustively verify PRs since pilot approval")
     state[key] = {"state": "approved-pilot-retry", "attempts": 1}
     save_ledger(state, path)
     print("Reviewed pilot #462 eligible for one final controlled retry", flush=True)
