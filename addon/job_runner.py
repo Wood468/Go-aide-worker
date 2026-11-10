@@ -222,7 +222,9 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
         process = subprocess.Popen(
             cmd, cwd=workspace.parent if action == "prepare" else workspace,
             stdin=subprocess.DEVNULL,
-            stdout=private_output if action in {"edit", "direct_edit"} else subprocess.DEVNULL,
+            stdout=(private_output if action in {"edit", "direct_edit"} else
+                    subprocess.PIPE if action in {"queue_scan", "queue_once", "queue_reset"}
+                    else subprocess.DEVNULL),
             stderr=subprocess.STDOUT if action == "edit" else subprocess.DEVNULL,
             start_new_session=True,
             env=env,
@@ -236,6 +238,11 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
                 pass
             process.wait()
             raise JobError("Job timed out") from exc
+        if action in {"queue_scan", "queue_once", "queue_reset"}:
+            output = process.stdout.read(2048) if process.stdout else b""
+            for record in output.decode("utf-8", errors="replace").splitlines():
+                if re.fullmatch(r"(Queue phase: (refresh|edit|publish)|Queue halted: inspect issue #[0-9]+ before any retry|Approved queued tasks: [0-9]+; no edits|Submitted issue #[0-9]+ as draft PR #[0-9]+|Queue paused for review of previous task|No approved unprocessed tasks|Reviewed failed task #[0-9]+ is eligible again)", record):
+                    print(record, flush=True)
         if action == "edit":
             private_output.seek(0)
             category = classify_edit_output(private_output.read(200_000))
