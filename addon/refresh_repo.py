@@ -25,7 +25,12 @@ def refresh(root=ROOT, checkout=checkout_repo.checkout):
             or next_dir.is_symlink() or old_dir.exists() or old_dir.is_symlink()):
         raise RefreshError("Unsafe isolated checkout refresh preconditions")
     # Clone first. The old checkout is kept intact if networking fails.
-    checkout(REPO, REPO, destination=next_dir)
+    try:
+        checkout(REPO, REPO, destination=next_dir)
+    except (checkout_repo.CheckoutError, OSError, ValueError):
+        if next_dir.is_dir() and not next_dir.is_symlink():
+            shutil.rmtree(next_dir)
+        raise
     try:
         source.rename(old_dir)
         try:
