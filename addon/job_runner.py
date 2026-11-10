@@ -15,7 +15,7 @@ JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
-ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "probe", "direct_edit"}
+ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "publish_test", "probe", "direct_edit"}
 MODEL = "gemini/gemini-3.5-flash-lite"
 
 
@@ -90,9 +90,9 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Gemini key not configured")
     if action == "probe" and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini API key not configured for probe")
-    if action == "publish" and (os.environ.get("ENABLE_PUBLISHING") != "true" or not os.environ.get("GITHUB_TOKEN")):
+    if action in {"publish", "publish_test"} and (os.environ.get("ENABLE_PUBLISHING") != "true" or not os.environ.get("GITHUB_TOKEN")):
         raise JobError("Publishing disabled or token missing")
-    if action in {"inspect", "test", "verify", "publish", "probe"} and prompt.strip():
+    if action in {"inspect", "test", "verify", "publish", "publish_test", "probe"} and prompt.strip():
         raise JobError("Non-edit jobs cannot include a prompt")
     if action == "prepare":
         if prompt.strip() or not os.environ.get("WORKER_PUBLIC_REPOSITORY") or not os.environ.get("ALLOWED_PUBLIC_REPOSITORIES"):
@@ -118,6 +118,8 @@ def command_for(action, prompt):
         return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     if action == "publish":
         return [sys.executable, "/opt/worker/publisher.py"]
+    if action == "publish_test":
+        return [sys.executable, "/opt/worker/publisher.py", "--smoke"]
     if action == "probe":
         return [sys.executable, "/opt/worker/gemini_probe.py"]
     if action == "direct_edit":
@@ -188,14 +190,14 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
-    env = dict(os.environ) if action in {"edit", "direct_edit", "publish"} else {
+    env = dict(os.environ) if action in {"edit", "direct_edit", "publish", "publish_test"} else {
         key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE")
         if key in os.environ
     }
     env["GIT_TERMINAL_PROMPT"] = "0"
     if action == "prepare":
         env["ALLOWED_PUBLIC_REPOSITORIES"] = os.environ["ALLOWED_PUBLIC_REPOSITORIES"]
-    if action == "publish":
+    if action in {"publish", "publish_test"}:
         env.pop("GEMINI_API_KEY", None)
         env.pop("ENABLE_EDITS", None)
     if action == "probe":

@@ -121,6 +121,65 @@ class DraftPublisher(unittest.TestCase):
         self.assertEqual(operations[-1][2]["base"], "main")
         self.assertEqual(operations[-2][2]["ref"], "refs/heads/worker/review-abcdef123456")
 
+    def test_smoke_roundtrip_creates_only_draft_then_closes_and_deletes(self):
+        operations = []
+        def request(token, method, endpoint, payload=None):
+            self.assertEqual(token, "dummy-token")
+            operations.append((method, endpoint, payload))
+            if endpoint == "/git/ref/heads/main":
+                return {"object": {"sha": self.sha}}
+            if endpoint == "/git/commits/" + self.sha:
+                return {"tree": {"sha": "base-tree"}}
+            if endpoint == "/git/blobs":
+                return {"sha": "blob-sha"}
+            if endpoint == "/git/trees":
+                return {"sha": "new-tree"}
+            if endpoint == "/git/commits":
+                return {"sha": "new-commit"}
+            if endpoint == "/git/refs":
+                return {}
+            if endpoint == "/pulls":
+                self.assertIs(payload["draft"], True)
+                self.assertEqual(payload["base"], "main")
+                return {"number": 1234, "draft": True}
+            if endpoint == "/pulls/1234":
+                self.assertEqual(payload, {"state": "closed"})
+                return {"state": "closed"}
+            if endpoint.startswith("/git/refs/heads/worker/connectivity-"):
+                return {}
+            self.fail("Unexpected API call")
+        self.assertEqual(publisher.smoke_roundtrip("dummy-token", request, "abcdef123456"), 1234)
+        self.assertEqual(operations[-2][:2], ("PATCH", "/pulls/1234"))
+        self.assertEqual(operations[-1][:2], ("DELETE", "/git/refs/heads/worker/connectivity-abcdef123456"))
+        self.assertFalse(any(op[1] == "/git/refs/heads/main" for op in operations))
+
+    def test_smoke_missing_draft_confirmation_still_deletes_branch(self):
+        operations = []
+        def request(token, method, endpoint, payload=None):
+            operations.append((method, endpoint))
+            if endpoint == "/git/ref/heads/main":
+                return {"object": {"sha": self.sha}}
+            if endpoint == "/git/commits/" + self.sha:
+                return {"tree": {"sha": "base-tree"}}
+            if endpoint == "/git/blobs":
+                return {"sha": "blob-sha"}
+            if endpoint == "/git/trees":
+                return {"sha": "new-tree"}
+            if endpoint == "/git/commits":
+                return {"sha": "new-commit"}
+            if endpoint == "/pulls":
+                return {"number": 1234, "draft": False}
+            return {}
+        with self.assertRaises(publisher.PublishError):
+            publisher.smoke_roundtrip("dummy-token", request, "abcdef123456")
+        self.assertEqual(operations[-1], ("DELETE", "/git/refs/heads/worker/connectivity-abcdef123456"))
+
+    def test_smoke_requires_token_and_valid_suffix(self):
+        with self.assertRaises(publisher.PublishError):
+            publisher.smoke_roundtrip("")
+        with self.assertRaises(publisher.PublishError):
+            publisher.smoke_roundtrip("dummy", branch_id="../../escape")
+
     def test_never_publish_stale_head(self):
         (self.root / "README.md").write_text("Change\n")
         operations = []
