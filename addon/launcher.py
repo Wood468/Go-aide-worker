@@ -56,6 +56,8 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
+    if action == "queue_ack_code_pilot" and (enabled or publish_enabled):
+        raise ConfigurationError("Merged pilot acknowledgement requires editing and publishing disabled")
     if action in {"queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot"} and not queue_enabled:
         raise ConfigurationError("Pilot recovery requires explicit queue opt-in")
     if action in {"queue_once", "queue_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
