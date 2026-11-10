@@ -3,6 +3,7 @@
 import json
 import signal
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,31 @@ MODEL = "gemini/gemini-2.5-flash"
 
 class JobError(Exception):
     pass
+
+
+def selected_edit_files(workspace):
+    raw = os.environ.get("EDIT_FILES", "")
+    if len(raw) > 500:
+        raise JobError("Invalid selected files")
+    paths = [x.strip() for x in raw.split(",") if x.strip()]
+    if len(paths) > 5 or len(set(paths)) != len(paths):
+        raise JobError("Invalid selected files")
+    for relative in paths:
+        if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,180}", relative)
+                or any(part in {"", ".", "..", ".git", ".github"}
+                       for part in relative.split("/"))
+                or any("token" in part.lower() or "secret" in part.lower()
+                       for part in relative.split("/"))):
+            raise JobError("Unsafe selected edit path")
+        current = workspace
+        for part in relative.split("/")[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise JobError("Symlinked edit parent not allowed")
+        target = workspace / relative
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise JobError("Unsafe edit target")
+    return paths
 
 
 def validate_job(raw, workspace=WORKSPACE):
@@ -49,6 +75,8 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Workspace must be a real directory")
     if (workspace / ".git").is_symlink() or not (workspace / ".git").is_dir():
         raise JobError("Workspace must contain a checked-out Git repository")
+    if action == "edit":
+        selected_edit_files(workspace)
     return action, prompt
 
 
@@ -61,9 +89,12 @@ def command_for(action, prompt):
         return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     if action == "publish":
         return [sys.executable, "/opt/worker/publisher.py"]
+    files = selected_edit_files(WORKSPACE)
+    file_args = [arg for file in files for arg in ("--file", file)]
     return [
         "aider", "--model", MODEL, "--yes", "--no-auto-commits",
-        "--no-gitignore", "--no-show-model-warnings", "--message", prompt,
+        "--no-gitignore", "--no-show-model-warnings",
+        *file_args, "--message", prompt,
     ]
 
 
