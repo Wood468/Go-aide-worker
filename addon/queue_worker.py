@@ -138,7 +138,7 @@ def has_pending_review(state, fetch=github_read):
     for record in state.values():
         if not isinstance(record, dict):
             return True
-        if record.get("state") == "started":
+        if record.get("state") in {"started", "needs-review"}:
             return True
         if record.get("state") == "submitted":
             n = record.get("pr")
