@@ -46,7 +46,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Too many or duplicate edit files")
     for path in selected:
         if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,180}", path)
-                or any(x in {"", ".", "..", ".git", ".github"} for x in path.split("/"))
+                or any(x.startswith(".") or x in {"", ".", ".."} for x in path.split("/"))
                 or any("token" in x.lower() or "secret" in x.lower() for x in path.split("/"))):
             raise ConfigurationError("Unsafe edit file path")
     if action != "edit" and selected:
