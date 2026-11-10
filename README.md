@@ -10,7 +10,7 @@ Home Assistant's Configuration screen has a masked `GitHub fine-grained token` f
 
 ## v0.3.1: no-op edit diagnostics
 
-The first Gemini/Aider edit job returned process exit code 0 but the verification task found no matching smoke file. This release keeps raw model/provider output private in an unlinked temporary file, emits only a fixed diagnostic category and changed-path count, and treats a zero-change exit code as failure. The `verify` task distinguishes a missing file from one with incorrect contents. Do not infer a successful code contribution from process exit code alone.
+The first Gemini/Aider edit job returned process exit code 0 but the verification task found no matching smoke file. Aider works best when given explicit editable file paths; the add-on now has a safe, optional comma-separated `edit_files` field (up to 5 paths), passed as `--file` arguments during an Edit job only. This release keeps raw model/provider output private in an unlinked temporary file, emits only a fixed diagnostic category and changed-path count, and treats a zero-change exit code as failure. The `verify` task distinguishes a missing file from one with incorrect contents. Do not infer a successful code contribution from process exit code alone.
 
 ## v0.3.0: verification and restricted draft PR publishing
 
