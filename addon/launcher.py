@@ -14,7 +14,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "inspect", "test", "edit", "verify", "publish"}
+ACTION_SET = {"idle", "prepare", "inspect", "test", "edit", "verify", "publish", "probe"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -55,11 +55,13 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
+    if action == "probe" and not api_key.strip():
+        raise ConfigurationError("Probe requires Gemini key")
     if action == "edit" and (not enabled or not prompt.strip() or not api_key.strip()):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
     if action == "publish" and (not publish_enabled or not github_token.strip()):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
-    if action in {"idle", "prepare", "inspect", "test", "verify", "publish"} and prompt.strip():
+    if action in {"idle", "prepare", "inspect", "test", "verify", "publish", "probe"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
     return action, prompt, enabled, api_key, publish_enabled, github_token, ",".join(selected)
 
@@ -134,6 +136,8 @@ def main():
         environment["ENABLE_EDITS"] = "true"
         environment["GEMINI_API_KEY"] = api_key
         environment["EDIT_FILES"] = edit_files
+    if action == "probe":
+        environment["GEMINI_API_KEY"] = api_key
     if action == "publish":
         environment["ENABLE_PUBLISHING"] = "true"
         environment["GITHUB_TOKEN"] = github_token
