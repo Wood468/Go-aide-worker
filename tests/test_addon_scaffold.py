@@ -13,10 +13,16 @@ class ScaffoldSafety(unittest.TestCase):
         for line in (
             "hassio_api: false", "homeassistant_api: false",
             "docker_api: false", "host_network: false",
-            "full_access: false", "boot: manual", "map: []",
+            "full_access: false", "boot: auto", "map: []",
             "privileged: []",
         ):
             self.assertIn(line, CONFIG)
+
+    def test_queue_still_disabled_by_default_after_autoboot(self):
+        self.assertIn("  job_action: idle", CONFIG)
+        self.assertIn("  enable_queue: false", CONFIG)
+        self.assertIn("  enable_edits: false", CONFIG)
+        self.assertIn("  enable_publishing: false", CONFIG)
 
     def test_no_secrets_in_image(self):
         self.assertNotIn("GEMINI_API_KEY=", DOCKERFILE)
