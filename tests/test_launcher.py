@@ -77,7 +77,7 @@ class OptionsBridge(unittest.TestCase):
 
     def test_no_work_when_idle(self):
         self.write(job_action="idle", job_prompt="", enable_edits=False, gemini_api_key="")
-        with (patch.object(launcher, "OPTIONS", self.path),
+        with (patch.object(launcher, "read_options", return_value=("idle", "", False, "")),
               patch.object(launcher, "prepare_directory"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
