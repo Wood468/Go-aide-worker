@@ -217,4 +217,37 @@ class WorkerQueueTests(unittest.TestCase):
             with self.assertRaises(q.QueueError):
                 q.recover_pilot(ledger, fetch=lambda *_: self.fail("no remote"))
 
+
+    def test_pilot_recovery_checks_every_page_of_historical_prs(self):
+        from urllib.parse import parse_qs, urlparse
+        for include_existing in (False, True):
+            with self.subTest(include_existing=include_existing):
+                with tempfile.TemporaryDirectory() as folder:
+                    ledger = Path(folder) / "ledger.json"
+                    q.save_ledger({"462": {"state": "needs-review"}}, ledger)
+                    scanned = []
+                    def fetch(url):
+                        if url.endswith("/issues/462"):
+                            return issue(number=462,
+                                         path="docs/worker-task-queue-pilot.md")
+                        page = int(parse_qs(urlparse(url).query)["page"][0])
+                        scanned.append(page)
+                        if page == 1:
+                            return [{"title": "Unrelated PR", "body": ""}] * 100
+                        if page == 2:
+                            return ([{"title": "Worker: issue #462 draft changes",
+                                      "body": "Source task: #462"}]
+                                    if include_existing else [])
+                        self.fail("Recovery read unnecessary third page")
+                    if include_existing:
+                        with self.assertRaises(q.QueueError):
+                            q.recover_pilot(ledger, fetch=fetch)
+                        self.assertEqual(q.read_ledger(ledger)["462"]["state"],
+                                         "needs-review")
+                    else:
+                        self.assertTrue(q.recover_pilot(ledger, fetch=fetch))
+                        self.assertEqual(q.read_ledger(ledger)["462"]["state"],
+                                         "approved-pilot-retry")
+                    self.assertEqual(scanned, [1, 2])
+
 if __name__=="__main__":unittest.main()
