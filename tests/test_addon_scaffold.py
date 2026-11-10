@@ -24,8 +24,9 @@ class ScaffoldSafety(unittest.TestCase):
         self.assertNotIn("COPY .env", DOCKERFILE)
 
     def test_idle_entrypoint(self):
-        self.assertIn("exec sleep infinity", STARTUP)
+        self.assertIn("exec python /opt/worker/launcher.py", STARTUP)
         self.assertNotIn("aider ", STARTUP)
+        self.assertIn("os.execve(\"/usr/bin/sleep\"", (ROOT / "addon/launcher.py").read_text())
 
     def test_expected_files_exist(self):
         for name in ("addon/config.yaml", "addon/Dockerfile", "addon/run.sh", ".gitignore"):
