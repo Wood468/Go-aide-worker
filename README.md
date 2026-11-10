@@ -8,6 +8,10 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.2: exact reviewed code-pilot recovery
+
+The first owner-approved single-file regression pilot #465 was safely held `needs-review` after v0.5.0 publishing rejected an otherwise allowed `.test.mjs` path. v0.5.1 resolves that publisher mismatch. New `queue_recover_code_pilot` is a **one-time, explicit** HA action, requiring `enable_queue:true` with editing/publishing OFF; it inspects exact owner-approved issue #465 and every recent PR since its creation, refuses any previous published draft, refuses multiple recoveries and never edits or publishes. Then a separately authorised `queue_once` performs the second and final pilot attempt. Failures remain review-only and no third attempt is possible. Keep continuous `queue_loop` disabled until the new draft's diff and CI are reviewed.
+
 ## v0.5.1: restricted JS publishing and reboot-safe startup
 
 - Closed pilot issue #462 produced a single reviewed documentation draft PR #464, which was closed without merging. The live v0.4.3 `queue_loop` started and polled with no other approved tasks.
