@@ -15,7 +15,7 @@ class CheckoutError(Exception):
 
 
 def validate_repository(repository, allowlist):
-    if not isinstance(repository, str) or not REPO_PATTERN.fullmatch(repository):
+    if (not isinstance(repository, str) or not REPO_PATTERN.fullmatch(repository)\n            or any(part in {".", ".."} or part.startswith(".") for part in repository.split("/"))):
         raise CheckoutError("Repository must be an owner/name slug")
     allowed = {x.strip() for x in allowlist.split(",") if x.strip()}
     if repository not in allowed:
