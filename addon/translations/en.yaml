@@ -1,0 +1,13 @@
+configuration:
+  job_action:
+    name: Job to run
+    description: "Idle does nothing. Prepare fetches only the allowlisted public GO Field Notes repository. Use Inspect or Test before enabling Edit."
+  job_prompt:
+    name: Coding task prompt
+    description: "Required only for Edit. Do not paste keys, tokens or other secrets."
+  enable_edits:
+    name: Allow Aider to edit files
+    description: "Off by default. Only permits edits inside the worker's isolated repository checkout."
+  gemini_api_key:
+    name: Google AI Studio API key
+    description: "Keep this key here in Home Assistant, not in GitHub or ChatGPT. Only an explicitly enabled Edit job passes it to Aider."
