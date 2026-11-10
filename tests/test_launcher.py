@@ -92,6 +92,13 @@ class OptionsBridge(unittest.TestCase):
         self.write(job_action="publish", enable_publishing=True, github_token="dummy-token")
         self.assertEqual(launcher.read_options(self.path)[0], "publish")
 
+    def test_publish_test_requires_explicit_optin(self):
+        self.write(job_action="publish_test", enable_publishing=False, github_token="dummy")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+        self.write(job_action="publish_test", enable_publishing=True, github_token="dummy")
+        self.assertEqual(launcher.read_options(self.path)[0], "publish_test")
+
     def test_edit_never_receives_github_token(self):
         self.write(job_action="edit", job_prompt="make tiny change", enable_edits=True,
                    gemini_api_key="dummy-gemini-key", github_token="dummy-github-token")
