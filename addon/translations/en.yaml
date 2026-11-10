@@ -1,7 +1,7 @@
 configuration:
   job_action:
     name: Job to run
-    description: "Idle does nothing. Verify checks the Gemini smoke-test file. Publish submits up to ten allowed files to a new draft PR and is disabled by default."
+    description: "Idle does nothing. Probe tests Gemini API connectivity without editing. Verify checks the Gemini smoke-test file. Publish submits up to ten allowed files to a new draft PR and is disabled by default."
   edit_files:
     name: Files to edit (comma-separated)
     description: "Optional, up to five safe repository-relative file paths. Explicit file selection makes Aider more reliable; never enter secrets or system paths."
