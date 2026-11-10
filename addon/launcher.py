@@ -119,7 +119,11 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (ConfigurationError, OSError, ValueError, json.JSONDecodeError) as exc:
-        # Do not log exception contents: file paths or secrets may be involved.
+    except ConfigurationError as exc:
+        # Only static, controlled validation messages; never print raw options or keys.
+        print(f"Worker configuration rejected: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        # Do not log exception contents: paths and external messages may be sensitive.
         print(f"Worker startup failed: {type(exc).__name__}", file=sys.stderr)
         sys.exit(2)
