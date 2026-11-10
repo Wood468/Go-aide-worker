@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-job, local-only Aider runner. No remote job submission or repository cloning."""
+"""Single-job, local-only runner with allowlisted public Git preparation."""
 import json
 import signal
 import os
@@ -85,13 +85,12 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     try:
         return_code = process.wait(timeout=TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
-        # Terminate the entire process group, including child commands.
-        os.killpg(process.pid, signal.SIGTERM)
+        # Kill the whole process group, including children that ignore SIGTERM.
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
             os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+        except ProcessLookupError:
+            pass  # The whole group already exited.
+        process.wait()
         raise JobError("Job timed out") from exc
     print(f"Job finished with exit code {return_code}", flush=True)
     return return_code
