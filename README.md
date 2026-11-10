@@ -8,6 +8,12 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.4.2: queue status and one reviewed pilot recovery
+
+`queue_status` is a read-only local ledger summary in Supervisor logs; it never needs edit/publish permissions or credentials. After fixing the first-run editor handoff in v0.4.1, `queue_recover_pilot` is an explicitly opted-in **single recovery for issue #462 only**, allowed solely if the persisted task is failed/interrupted on its first attempt, the approved issue is unchanged, and GitHub recent PRs contain no published draft for that issue. The recovery action never edits code or publishes. It records a one-time retry authorisation and refuses a third attempt. Run `queue_once` separately after reviewing status and GitHub.
+
+To recover the initial known v0.4.0 pilot failure: inspect `queue_status` first; if #462 is `needs-review`, check no draft exists, deliberately set `enable_queue: true` with edits/publishing **off**, run `queue_recover_pilot`, then return all options to Idle/off. Only later execute a single `queue_once` pilot with normal permissions and inspect its draft PR. Do not enable `queue_loop` until the pilot passes. A task that already submitted a draft is never recovered.
+
 ## v0.4.1: first queue task path correction
 
 The queue and direct editor now agree on the restricted `/data/workspace/job.json` handoff for queue children, while manual edits continue reading `/data/job.json`. A fresh queue can create its first approved job file atomically (private `0600`) without requiring a pre-existing placeholder. Negative tests cover manual/queue separation and missing, oversized or symlinked requests. Keep the add-on Idle with the queue, edit and publishing toggles disabled until the v0.4.1 pilot passes. No automatic merges or deployments are introduced.
