@@ -79,12 +79,12 @@ class WorkerQueueTests(unittest.TestCase):
             calls=[]
             def runner(command, env):
                 calls.append((command,env))
-                if command[-1]=="refresh_repo.py":
+                if Path(command[-1]).name=="refresh_repo.py":
                     return b""
-                if command[-1]=="direct_editor.py":
+                if Path(command[-1]).name=="direct_editor.py":
                     (checkout/"docs/worker-task-qa-note.md").write_text("# QA\n")
                     return b""
-                if command[-1]=="publisher.py":
+                if Path(command[-1]).name=="publisher.py":
                     return b"Created draft PR #999; review required"
                 self.fail("unexpected command")
             original_save=q.save_ledger
