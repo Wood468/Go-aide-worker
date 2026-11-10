@@ -31,7 +31,7 @@ def selected_edit_files(workspace):
         raise JobError("Invalid selected files")
     for relative in paths:
         if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,180}", relative)
-                or any(part in {"", ".", "..", ".git", ".github"}
+                or any(part.startswith(".") or part in {"", ".", ".."}
                        for part in relative.split("/"))
                 or any("token" in part.lower() or "secret" in part.lower()
                        for part in relative.split("/"))):
