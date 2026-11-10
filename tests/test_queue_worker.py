@@ -87,10 +87,11 @@ class WorkerQueueTests(unittest.TestCase):
                 if command[-1]=="publisher.py":
                     return b"Created draft PR #999; review required"
                 self.fail("unexpected command")
+            original_save=q.save_ledger
             with (patch.object(q,"ROOT",root),
                   patch.object(q,"CHECKOUT",checkout),
                   patch.object(q,"LEDGER",ledger),
-                  patch.object(q,"save_ledger",side_effect=lambda st:q.save_ledger(st,ledger)),
+                  patch.object(q,"save_ledger",side_effect=lambda st:original_save(st,ledger)),
                   patch.dict(os.environ,{"GEMINI_API_KEY":"fake-gemini","GITHUB_TOKEN":"fake-github"}),
                   patch.dict(sys.modules,{"publisher":type("Stub",(),{
                     "safe_files":staticmethod(lambda w:("sha",[("docs/worker-task-qa-note.md",b"# QA\n")]))})()})):
@@ -106,10 +107,11 @@ class WorkerQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder); (root/"source").mkdir()
             (root/"job.json").write_text("{}")
+            original_save=q.save_ledger
             with (patch.object(q,"ROOT",root),
                   patch.object(q,"CHECKOUT",root/"source"),
                   patch.object(q,"LEDGER",root/"ledger.json"),
-                  patch.object(q,"save_ledger",side_effect=lambda st:q.save_ledger(st,root/"ledger.json")),
+                  patch.object(q,"save_ledger",side_effect=lambda st:original_save(st,root/"ledger.json")),
                   patch.dict(os.environ,{"GEMINI_API_KEY":"test","GITHUB_TOKEN":"test"})):
                 state={}
                 with self.assertRaises(q.QueueError):
