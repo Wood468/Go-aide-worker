@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 
 MAX_PROMPT_CHARS = 3000
-ACTIONS = ("inspect", "test", "edit")
+ACTIONS = ("inspect", "test", "edit", "prepare")
 
 
 def submit(action, prompt, destination=Path("/data/job.json")):
@@ -15,6 +15,8 @@ def submit(action, prompt, destination=Path("/data/job.json")):
         raise ValueError("Invalid action or prompt")
     if action == "edit" and (not prompt.strip() or os.environ.get("ENABLE_EDITS") != "true"):
         raise ValueError("Edits are disabled")
+    if action == "prepare" and prompt.strip():
+        raise ValueError("Preparation takes no user-supplied prompt")
     destination = Path(destination)
     parent = destination.parent
     if not parent.is_dir() or parent.is_symlink():
