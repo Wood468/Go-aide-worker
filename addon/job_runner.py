@@ -84,9 +84,9 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Invalid prompt length")
     if action in {"edit", "direct_edit"} and not prompt.strip():
         raise JobError("Edit prompt must not be empty")
-    if action == "edit" and os.environ.get("ENABLE_EDITS") != "true":
+    if action in {"edit", "direct_edit"} and os.environ.get("ENABLE_EDITS") != "true":
         raise JobError("Edits disabled; ENABLE_EDITS must be true")
-    if action == "edit" and not os.environ.get("GEMINI_API_KEY"):
+    if action in {"edit", "direct_edit"} and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini key not configured")
     if action == "probe" and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini API key not configured for probe")
