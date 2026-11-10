@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Home Assistant options bridge: privileged initialization, then one-way UID drop.
 
-No API listener. No GitHub write access. Gemini credentials are passed only to
+No API listener. GitHub token stays in protected options; publishing is disabled. Gemini credentials are passed only to
 explicitly enabled edit jobs, never written into the job file or logs.
 """
 import json
@@ -31,13 +31,14 @@ def read_options(path=OPTIONS):
     prompt = raw.get("job_prompt", "")
     enabled = raw.get("enable_edits", False)
     api_key = raw.get("gemini_api_key", "")
+    github_token = raw.get("github_token", "")
     if not isinstance(action, str) or action not in ACTION_SET:
         raise ConfigurationError("Unsupported action")
     if not isinstance(prompt, str) or len(prompt) > 3000:
         raise ConfigurationError("Invalid prompt")
     if not isinstance(enabled, bool):
         raise ConfigurationError("enable_edits must be boolean")
-    if not isinstance(api_key, str):
+    if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
     if action == "edit" and (not enabled or not prompt.strip() or not api_key.strip()):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
