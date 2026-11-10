@@ -23,7 +23,7 @@ FORBIDDEN_COMPONENTS = {".git", ".github", ".env", "secrets", "credentials", ".s
 MAX_FILES = 10
 MAX_FILE_BYTES = 100_000
 MAX_TOTAL_BYTES = 250_000
-SECRET_MARKERS = (b"-----BEGIN PRIVATE KEY-----", b"github_pat_", b"ghp_", b"gho_", b"AIza")
+SECRET_MARKERS = (b"-----BEGIN PRIVATE KEY-----", b"github_pat_", b"ghp_", b"gho_", "AIza".encode("utf-8"))
 
 
 class PublishError(Exception):
@@ -86,6 +86,8 @@ def safe_files(workspace):
         data = path.read_bytes()
         if len(data) > MAX_FILE_BYTES or b"\0" in data:
             raise PublishError("Oversized or binary file")
+        if any(marker in data for marker in SECRET_MARKERS):
+            raise PublishError("Possible credential found in changed file")
         total += len(data)
         if total > MAX_TOTAL_BYTES:
             raise PublishError("Total patch exceeds limit")
