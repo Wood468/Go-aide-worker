@@ -134,6 +134,37 @@ class RestrictedJobs(unittest.TestCase):
             with self.assertRaises(runner.JobError):
                 runner.validate_job(self.job("prepare"), destination)
 
+    def test_publish_requires_explicit_optin(self):
+        with patch.dict(os.environ, {"ENABLE_PUBLISHING": "false", "GITHUB_TOKEN": "dummy"}):
+            with self.assertRaises(runner.JobError):
+                runner.validate_job(self.job("publish"), self.workspace)
+        with patch.dict(os.environ, {"ENABLE_PUBLISHING": "true", "GITHUB_TOKEN": "dummy"}):
+            self.assertEqual(runner.validate_job(self.job("publish"), self.workspace)[0], "publish")
+
+    def test_verify_detects_actual_smoke_file(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job_file = Path(tmp) / "job.json"
+            job_file.write_text(json.dumps(self.job("verify")))
+            self.assertEqual(runner.run(job_file, self.workspace), 3)
+            (self.workspace / "WORKER_SMOKE_TEST.txt").write_text("GO Aider Gemini smoke test succeeded\\n")
+            self.assertEqual(runner.run(job_file, self.workspace), 0)
+
+    def test_publish_process_has_no_gemini_credentials(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job_file = Path(tmp) / "job.json"
+            job_file.write_text(json.dumps(self.job("publish")))
+            proc = MagicMock()
+            proc.wait.return_value = 0
+            with (patch.dict(os.environ, {"ENABLE_PUBLISHING": "true",
+                    "GITHUB_TOKEN": "dummy-github", "GEMINI_API_KEY": "dummy-gemini"}),
+                  patch.object(runner.subprocess, "Popen", return_value=proc) as popen):
+                self.assertEqual(runner.run(job_file, self.workspace), 0)
+                env = popen.call_args.kwargs["env"]
+                self.assertEqual(env["GITHUB_TOKEN"], "dummy-github")
+                self.assertNotIn("GEMINI_API_KEY", env)
+
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])
