@@ -1,5 +1,5 @@
 name: "GO Aider Worker (Prototype)"
-version: "0.2.0"
+version: "0.2.1"
 slug: "go_aider_worker"
 description: "Isolated, one-job-at-a-time Gemini/Aider worker; experimental"
 url: "https://github.com/Wood468/Go-aide-worker"
@@ -21,8 +21,10 @@ options:
   job_prompt: ""
   enable_edits: false
   gemini_api_key: ""
+  github_token: ""
 schema:
   job_action: "list(idle|prepare|inspect|test|edit)"
   job_prompt: str
   enable_edits: bool
   gemini_api_key: password
+  github_token: password
