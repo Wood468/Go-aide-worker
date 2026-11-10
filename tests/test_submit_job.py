@@ -47,6 +47,14 @@ class SubmissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.submit("edit", "Fix a test", self.destination)
 
+    def test_prepare_allowed_without_prompt(self):
+        module.submit("prepare", "", self.destination)
+        self.assertIn('"prepare"', self.destination.read_text())
+
+    def test_prepare_rejects_prompt(self):
+        with self.assertRaises(ValueError):
+            module.submit("prepare", "clone arbitrary URL", self.destination)
+
     def test_rejects_oversized_prompt(self):
         with self.assertRaises(ValueError):
             module.submit("inspect", "a" * 3001, self.destination)
