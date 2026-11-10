@@ -28,3 +28,4 @@ jobs:
         run: |
           docker run --rm --entrypoint python go-aider-worker:prototype -c "import os, pathlib, ast, shutil; assert os.getuid() == 10001; assert shutil.which('aider'); [ast.parse(p.read_text()) for p in pathlib.Path('/opt/worker').glob('*.py')]"
           docker run --rm --entrypoint python go-aider-worker:prototype /opt/worker/submit_job.py --help
+          docker run --rm --entrypoint python go-aider-worker:prototype /opt/worker/preflight.py
