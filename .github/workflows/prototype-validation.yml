@@ -24,3 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build prototype image (never run with credentials)
         run: docker build --pull -t go-aider-worker:prototype addon/
+      - name: Smoke test container without credentials
+        run: |
+          docker run --rm --entrypoint python go-aider-worker:prototype -c "import os, pathlib, ast, shutil; assert os.getuid() == 10001; assert shutil.which('aider'); [ast.parse(p.read_text()) for p in pathlib.Path('/opt/worker').glob('*.py')]"
+          docker run --rm --entrypoint python go-aider-worker:prototype /opt/worker/submit_job.py --help
