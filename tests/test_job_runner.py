@@ -156,6 +156,32 @@ class RestrictedJobs(unittest.TestCase):
                 self.assertNotIn("GEMINI_API_KEY", popen.call_args.kwargs["env"])
                 self.assertNotIn("GITHUB_TOKEN", popen.call_args.kwargs["env"])
 
+    def test_queue_scan_is_readonly_and_credential_free(self):
+        import json
+        with tempfile.TemporaryDirectory() as temp:
+            job=Path(temp)/"job.json"
+            job.write_text(json.dumps(self.job("queue_scan")))
+            proc=MagicMock()
+            proc.wait.return_value=0
+            with (patch.dict(os.environ,{"GEMINI_API_KEY":"dummy-gemini",
+                                       "GITHUB_TOKEN":"dummy-github"}),
+                  patch.object(runner.subprocess,"Popen",return_value=proc) as popen):
+                self.assertEqual(runner.run(job,self.workspace),0)
+                env=popen.call_args.kwargs["env"]
+                self.assertNotIn("GITHUB_TOKEN",env)
+                self.assertNotIn("GEMINI_API_KEY",env)
+
+    def test_queue_loop_requires_explicit_environment_and_execs_without_timeout(self):
+        with patch.dict(os.environ,{"ENABLE_QUEUE":"true","GEMINI_API_KEY":"test",
+                                     "GITHUB_TOKEN":"test"},clear=True):
+            self.assertEqual(runner.validate_job(self.job("queue_loop"),self.workspace)[0],
+                             "queue_loop")
+            self.assertEqual(runner.command_for("queue_loop","")[-1],"loop")
+        with patch.dict(os.environ,{"ENABLE_QUEUE":"false","GEMINI_API_KEY":"test",
+                                     "GITHUB_TOKEN":"test"},clear=True):
+            with self.assertRaises(runner.JobError):
+                runner.validate_job(self.job("queue_loop"),self.workspace)
+
     def test_publish_test_requires_optin_and_uses_smoke_only(self):
         with patch.dict(os.environ, {"ENABLE_PUBLISHING": "false", "GITHUB_TOKEN": "dummy"}):
             with self.assertRaises(runner.JobError):
