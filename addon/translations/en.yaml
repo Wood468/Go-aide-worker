@@ -1,10 +1,13 @@
 configuration:
   job_action:
     name: Job to run
-    description: "Idle does nothing. Prepare fetches only the allowlisted public GO Field Notes repository. Use Inspect or Test before enabling Edit."
+    description: "Idle does nothing. Verify checks the Gemini smoke-test file. Publish submits up to ten allowed files to a new draft PR and is disabled by default."
   job_prompt:
     name: Coding task prompt
     description: "Required only for Edit. Do not paste keys, tokens or other secrets."
+  enable_publishing:
+    name: Allow draft PR publishing
+    description: "Off by default. Requires a GitHub token, permits new worker branch plus draft PR only, never merge."
   enable_edits:
     name: Allow Aider to edit files
     description: "Off by default. Only permits edits inside the worker's isolated repository checkout."
@@ -13,4 +16,4 @@ configuration:
     description: "Keep this key here in Home Assistant, not in GitHub or ChatGPT. Only an explicitly enabled Edit job passes it to Aider."
   github_token:
     name: GitHub fine-grained token
-    description: "Restricted to Wood468/crispy-barnacle. Stored here, not sent to Gemini or tests. Publishing stays disabled until separately verified."
+    description: "Restricted to Wood468/crispy-barnacle. Stored here, never sent to Gemini or tests. Only passed to the explicitly enabled Publish action."
