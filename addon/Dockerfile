@@ -5,6 +5,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm 
     && pip install --no-cache-dir 'aider-chat==0.86.1'
 RUN useradd --create-home --uid 10001 coder && mkdir -p /data/workspace && chown -R coder:coder /data/workspace
 COPY run.sh /run.sh
-RUN chmod 755 /run.sh
+COPY job_runner.py /opt/worker/job_runner.py
+RUN chmod 755 /run.sh /opt/worker/job_runner.py
+USER coder
 WORKDIR /data/workspace
 ENTRYPOINT ["/usr/bin/tini", "--", "/run.sh"]
