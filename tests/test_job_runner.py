@@ -73,6 +73,30 @@ class RestrictedJobs(unittest.TestCase):
                     runner.run(job, self.workspace)
                 killpg.assert_called_once_with(4242, runner.signal.SIGTERM)
 
+    def test_successful_job_returns_exit_code_and_scrubs_key(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("inspect")))
+            process = MagicMock()
+            process.wait.return_value = 0
+            with (patch.dict(os.environ, {"GEMINI_API_KEY": "dummy-test-secret"}),
+                  patch.object(runner.subprocess, "Popen", return_value=process) as popen):
+                self.assertEqual(runner.run(job, self.workspace), 0)
+            self.assertNotIn("GEMINI_API_KEY", popen.call_args.kwargs["env"])
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
+
+    def test_rejects_invalid_action_type(self):
+        with self.assertRaises(runner.JobError):
+            runner.validate_job({"action": [], "prompt": ""}, self.workspace)
+
+    def test_rejects_symlinked_git_dir(self):
+        (self.workspace / ".git").rmdir()
+        with tempfile.TemporaryDirectory() as other:
+            (self.workspace / ".git").symlink_to(other, target_is_directory=True)
+            with self.assertRaises(runner.JobError):
+                runner.validate_job(self.job("test"), self.workspace)
+
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])
