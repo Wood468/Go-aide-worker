@@ -8,6 +8,10 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.4.1: first queue task path correction
+
+The queue and direct editor now agree on the restricted `/data/workspace/job.json` handoff for queue children, while manual edits continue reading `/data/job.json`. A fresh queue can create its first approved job file atomically (private `0600`) without requiring a pre-existing placeholder. Negative tests cover manual/queue separation and missing, oversized or symlinked requests. Keep the add-on Idle with the queue, edit and publishing toggles disabled until the v0.4.1 pilot passes. No automatic merges or deployments are introduced.
+
 ## v0.4.0: approved task queue (limited pilot)
 
 This version includes an **opt-in** long-running queue that polls public GitHub Issues at most every 10 minutes. Queue Loop requires `enable_queue`, `enable_edits` and `enable_publishing` to be true and both keys saved. Queue Scan is read-only and does not require credentials.

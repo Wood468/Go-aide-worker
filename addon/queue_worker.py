@@ -167,15 +167,28 @@ def perform(task, state, fetch=github_read, runner=child_run):
             raise QueueError("Task must create a new documentation file")
         # Store only the editing instruction, never a credential.
         job = ROOT / "job.json"
-        if not job.is_file() or job.is_symlink():
+        if job.is_symlink() or (job.exists() and not job.is_file()):
             raise QueueError("Invalid worker job file")
         temp = ROOT / ".queue-job-next.json"
         if temp.exists() or temp.is_symlink():
             raise QueueError("Queue job file collision")
-        temp.write_text(json.dumps({"action": "direct_edit", "prompt": task["instruction"]}))
-        os.replace(temp, job)
+        # Atomic, owner-only queue job: never reuse the root-staged manual
+        # /data/job.json. Direct Edit reads this path only for queue children.
+        payload = json.dumps({"action": "direct_edit", "prompt": task["instruction"]}).encode()
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                     getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(payload)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temp, job)
+        finally:
+            if temp.exists():
+                temp.unlink()
         runner([sys.executable, "/opt/worker/direct_editor.py"],
-               child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"]))
+               child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"],
+                         GO_WORKER_QUEUE_EDIT="1"))
         import publisher
         _head, changed = publisher.safe_files(CHECKOUT)
         if [name for name, _data in changed] != [task["path"]]:

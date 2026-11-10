@@ -77,8 +77,7 @@ class WorkerQueueTests(unittest.TestCase):
             root=Path(folder)
             checkout=root/"source"
             (checkout/"docs").mkdir(parents=True)
-            job=root/"job.json"
-            job.write_text('{"action":"idle","prompt":""}')
+            job=root/"job.json"  # Deliberately absent: first assignment must create it.
             ledger=root/"ledger.json"
             calls=[]
             def runner(command, env):
@@ -103,6 +102,10 @@ class WorkerQueueTests(unittest.TestCase):
                 self.assertTrue(q.perform(q.parse_task(issue()),state,
                                           fetch=lambda url:{"state":"closed"},runner=runner))
                 self.assertEqual(state["10"],{"state":"submitted","pr":999})
+            self.assertEqual(json.loads(job.read_text()), {
+                "action": "direct_edit", "prompt": q.parse_task(issue())["instruction"]
+            })
+            self.assertEqual(calls[1][1]["GO_WORKER_QUEUE_EDIT"], "1")
             self.assertNotIn("GITHUB_TOKEN",calls[1][1])
             self.assertNotIn("GEMINI_API_KEY",calls[2][1])
             self.assertEqual(calls[2][1]["GITHUB_TOKEN"],"fake-github")
