@@ -63,7 +63,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
     if action in {"publish", "publish_test"} and (not publish_enabled or not github_token.strip()):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
-    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe"} and prompt.strip():
+    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe", "queue"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
     return action, prompt, enabled, api_key, publish_enabled, github_token, ",".join(selected)
 
