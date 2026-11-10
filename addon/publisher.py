@@ -20,6 +20,7 @@ REPO = "Wood468/crispy-barnacle"
 ROOT = "https://api.github.com/repos/" + REPO
 ALLOWED_SUFFIXES = {".py", ".js", ".jsx", ".ts", ".tsx", ".json", ".css",
                     ".html", ".md", ".yaml", ".yml", ".txt"}
+TEST_MJS_PATH = re.compile(r"test/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.test\.mjs")
 FORBIDDEN_COMPONENTS = {".git", ".github", ".env", "secrets", "credentials", ".ssh"}
 MAX_FILES = 10
 MAX_FILE_BYTES = 100_000
@@ -56,7 +57,8 @@ def safe_files(workspace):
         raise PublishError("Invalid base commit")
     tracked = local_git(workspace, "diff", "--no-renames", "--name-only", "-z", "HEAD")
     untracked = local_git(workspace, "ls-files", "--others", "--exclude-standard", "-z")
-    names = {p for p in (tracked + untracked).split(b"\0") if p}
+    untracked_names = {p for p in untracked.split(b"\0") if p}
+    names = {p for p in tracked.split(b"\0") if p} | untracked_names
     if not names or len(names) > MAX_FILES:
         raise PublishError("Expected 1 to 10 changed files")
     files = []
@@ -70,9 +72,12 @@ def safe_files(workspace):
                 or rel.startswith("/") or any(part in {"", ".", ".."} for part in rel.split("/"))
                 or any(part.lower() in FORBIDDEN_COMPONENTS for part in rel.split("/"))
                 or any(term in rel.lower() for term in ("token", "password", "secret", "credential", "private_key"))
-                or Path(rel).suffix not in ALLOWED_SUFFIXES
+                or (Path(rel).suffix not in ALLOWED_SUFFIXES
+                    and not TEST_MJS_PATH.fullmatch(rel))
                 or rel == "WORKER_SMOKE_TEST.txt"):
             raise PublishError("Restricted changed path")
+        if TEST_MJS_PATH.fullmatch(rel) and encoded in untracked_names:
+            raise PublishError("Only existing tracked JS regression tests may be published")
         path = workspace / rel
         cursor = workspace
         for component in rel.split("/")[:-1]:
