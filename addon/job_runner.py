@@ -72,9 +72,9 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     job = json.loads(job_file.read_text(encoding="utf-8"))
     action, prompt = validate_job(job, workspace)
     if action == "verify":
-        expected = b"GO Aider Gemini smoke test succeeded\\n"
+        expected = b"GO Aider Gemini smoke test succeeded\n"
         target = workspace / "WORKER_SMOKE_TEST.txt"
-        verified = target.is_file() and not target.is_symlink() and target.read_bytes().rstrip(b"\\r\\n") == expected.rstrip(b"\\n")
+        verified = target.is_file() and not target.is_symlink() and target.read_bytes().rstrip(b"\r\n") == expected.rstrip(b"\n")
         print("Gemini smoke file verified" if verified else "Gemini smoke file missing or incorrect", flush=True)
         return 0 if verified else 3
     cmd = command_for(action, prompt)
