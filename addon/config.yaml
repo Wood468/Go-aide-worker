@@ -1,0 +1,22 @@
+name: "GO Aider Worker (Prototype)"
+version: "0.1.0"
+slug: "go_aider_worker"
+description: "Unvalidated isolated Aider coding worker scaffold; not ready for installation"
+url: "https://aider.chat/"
+arch:
+  - amd64
+startup: application
+boot: manual
+init: false
+hassio_api: false
+homeassistant_api: false
+docker_api: false
+host_network: false
+privileged: []
+full_access: false
+apparmor: true
+map: []
+options:
+  gemini_api_key: ""
+schema:
+  gemini_api_key: password
