@@ -8,6 +8,10 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.4.1: validated job handoff and failure recovery
+
+The queue writes its direct-edit job to `/data/job.json`, matching the existing launcher. All task phases are logged as safe fixed labels. An interrupted or failed task marks its issue `needs-review` and pauses the queue. After checking GitHub to ensure no draft PR was created, choose `queue_reset`, put the numeric failed issue ID in Job Prompt, and restart once to clear only that reviewed failure. The operator then returns the add-on to Idle. This is never automatic.
+
 ## v0.4.0: approved task queue (limited pilot)
 
 This version includes an **opt-in** long-running queue that polls public GitHub Issues at most every 10 minutes. Queue Loop requires `enable_queue`, `enable_edits` and `enable_publishing` to be true and both keys saved. Queue Scan is read-only and does not require credentials.
