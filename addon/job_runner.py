@@ -107,9 +107,14 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if action == "verify":
         expected = b"GO Aider Gemini smoke test succeeded\n"
         target = workspace / "WORKER_SMOKE_TEST.txt"
-        verified = target.is_file() and not target.is_symlink() and target.read_bytes().rstrip(b"\r\n") == expected.rstrip(b"\n")
-        print("Gemini smoke file verified" if verified else "Gemini smoke file missing or incorrect", flush=True)
-        return 0 if verified else 3
+        if target.is_symlink() or not target.is_file():
+            print("Gemini smoke file absent", flush=True)
+            return 3
+        if target.read_bytes().rstrip(b"\r\n") != expected.rstrip(b"\n"):
+            print("Gemini smoke file exists but content differs", flush=True)
+            return 3
+        print("Gemini smoke file verified", flush=True)
+        return 0
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
