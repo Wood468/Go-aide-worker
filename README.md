@@ -8,6 +8,10 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.4.3: bounded paginated pilot PR audit
+
+The reviewed one-time pilot recovery now scans 20 PRs per GitHub page, newest first, until it reaches PRs older than the original approved issue. This avoids the 180 KB GitHub response limit and the erroneous fail-closed condition triggered by a full 100-item page in this long-lived repository. The audit still refuses recovery if a matching worker PR exists, metadata is missing, or 10 pages cannot exhaust the relevant history. Never clear a ledger blindly; queue status, explicit approval and a single controlled retry remain mandatory.
+
 ## v0.4.2: queue status and one reviewed pilot recovery
 
 `queue_status` is a read-only local ledger summary in Supervisor logs; it never needs edit/publish permissions or credentials. After fixing the first-run editor handoff in v0.4.1, `queue_recover_pilot` is an explicitly opted-in **single recovery for issue #462 only**, allowed solely if the persisted task is failed/interrupted on its first attempt, the approved issue is unchanged, and GitHub recent PRs contain no published draft for that issue. The recovery action never edits code or publishes. It records a one-time retry authorisation and refuses a third attempt. Run `queue_once` separately after reviewing status and GitHub.
