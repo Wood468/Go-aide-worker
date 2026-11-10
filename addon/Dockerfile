@@ -2,8 +2,8 @@ ARG BUILD_FROM=python:3.11-slim-bookworm
 FROM ${BUILD_FROM}
 ARG BUILD_VERSION=0.2.0
 ARG BUILD_ARCH=amd64
-LABEL io.hass.version="${BUILD_VERSION}" \\
-      io.hass.type="app" \\
+LABEL io.hass.version="${BUILD_VERSION}" \
+      io.hass.type="app" \
       io.hass.arch="${BUILD_ARCH}"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 RUN apt-get update && apt-get install -y --no-install-recommends git nodejs npm ca-certificates tini && rm -rf /var/lib/apt/lists/* \
