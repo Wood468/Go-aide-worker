@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Single-job, local-only Aider runner. No remote job submission or repository cloning."""
 import json
+import signal
 import os
 from pathlib import Path
 import subprocess
@@ -59,15 +60,24 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
+    process = subprocess.Popen(
+        cmd, cwd=workspace, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    )
     try:
-        completed = subprocess.run(
-            cmd, cwd=workspace, stdin=subprocess.DEVNULL,
-            timeout=TIMEOUT_SECONDS, check=False,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        )
+        return_code = process.wait(timeout=TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
+        # Terminate the entire process group, including child commands.
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
         raise JobError("Job timed out") from exc
-    print(f"Job finished with exit code {completed.returncode}", flush=True)
+    print(f"Job finished with exit code {return_code}", flush=True)
     return completed.returncode
 
 
