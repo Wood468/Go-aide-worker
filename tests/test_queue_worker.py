@@ -121,6 +121,8 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertNotIn("GEMINI_API_KEY",calls[2][1])
             self.assertEqual(calls[2][1]["GITHUB_TOKEN"],"fake-github")
             self.assertEqual(calls[2][1]["WORKER_ISSUE_NUMBER"],"10")
+            self.assertNotIn("GITHUB_TOKEN",calls[1][1])
+            self.assertTrue(calls[1][1]["QUEUE_TASK_PROMPT"].startswith("Create a short"))
 
     def test_error_marks_needs_review_instead_of_retry(self):
         with tempfile.TemporaryDirectory() as folder:
