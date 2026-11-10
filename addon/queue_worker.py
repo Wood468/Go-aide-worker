@@ -155,6 +155,7 @@ def has_pending_review(state, fetch=github_read):
 # acceptance pilot. No general-purpose ledger reset or automatic retry exists.
 PILOT_ISSUE = 462
 PILOT_PATH = "docs/worker-task-queue-pilot.md"
+RECOVERABLE_PILOTS = {462: PILOT_PATH, 465: "test/attendance-classification.test.mjs"}
 
 
 def ledger_summary(path=LEDGER):
@@ -174,14 +175,16 @@ def approved_for_dispatch(task, state):
     if key not in state:
         return True
     previous = state.get(key)
-    return (key == str(PILOT_ISSUE) and isinstance(previous, dict)
+    return (task["issue"] in RECOVERABLE_PILOTS and isinstance(previous, dict)
             and previous.get("state") == "approved-pilot-retry"
             and previous.get("attempts") == 1)
 
 
-def recover_pilot(path=LEDGER, fetch=github_read):
+def recover_pilot(path=LEDGER, fetch=github_read, pilot_issue=PILOT_ISSUE):
+    if pilot_issue not in RECOVERABLE_PILOTS:
+        raise QueueError("Recovery is not approved for this task")
     state = read_ledger(path)
-    key = str(PILOT_ISSUE)
+    key = str(pilot_issue)
     previous = state.get(key)
     if (not isinstance(previous, dict) or
             previous.get("state") not in {"started", "needs-review"} or
@@ -189,7 +192,7 @@ def recover_pilot(path=LEDGER, fetch=github_read):
         raise QueueError("Pilot recovery not eligible")
     source_issue = fetch("https://api.github.com/repos/" + REPO + "/issues/" + key)
     issue = parse_task(source_issue)
-    if not issue or issue["issue"] != PILOT_ISSUE or issue["path"] != PILOT_PATH:
+    if not issue or issue["issue"] != pilot_issue or issue["path"] != RECOVERABLE_PILOTS[pilot_issue]:
         raise QueueError("Pilot approval changed")
     # Only PRs *created after* this approved issue could have come from it.
     # Check newest first, in five-PR pages small enough for the worker's
@@ -223,7 +226,7 @@ def recover_pilot(path=LEDGER, fetch=github_read):
         raise QueueError("Cannot verify complete post-approval PR history")
     state[key] = {"state": "approved-pilot-retry", "attempts": 1}
     save_ledger(state, path)
-    print("Reviewed pilot #462 eligible for one final controlled retry", flush=True)
+    print("Reviewed pilot #" + key + " eligible for one final controlled retry", flush=True)
     return True
 
 
@@ -318,7 +321,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -337,6 +340,8 @@ def main():
             ledger_summary()
         elif mode == "recover_pilot":
             recover_pilot()
+        elif mode == "recover_code_pilot":
+            recover_pilot(pilot_issue=465)
         else:
             once(scan=(mode == "scan"))
 
