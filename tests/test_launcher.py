@@ -45,7 +45,7 @@ class OptionsBridge(unittest.TestCase):
 
     def test_edit_key_kept_in_memory(self):
         self.write(job_action="edit", job_prompt="fix", enable_edits=True, gemini_api_key="dummy-only")
-        self.assertEqual(launcher.read_options(self.path), ("edit", "fix", True, "dummy-only"))
+        self.assertEqual(launcher.read_options(self.path), ("edit", "fix", True, "dummy-only", False, ""))
 
     def test_github_token_stays_out_of_worker_environment(self):
         self.write(job_action="idle", job_prompt="", enable_edits=False,
@@ -53,6 +53,7 @@ class OptionsBridge(unittest.TestCase):
         self.assertEqual(launcher.read_options(self.path)[0], "idle")
         with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
               patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
               patch.object(launcher.os, "setgid"),
@@ -79,6 +80,70 @@ class OptionsBridge(unittest.TestCase):
             launcher.read_options(self.path)
         self.assertEqual(str(failure.exception), "Edit requires enabled mode, prompt and Gemini key")
         self.assertNotIn("dummy-", str(failure.exception))
+
+    def test_publish_requires_optin_and_token(self):
+        self.write(job_action="publish", enable_publishing=False,
+                   github_token="dummy-token")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+        self.write(job_action="publish", enable_publishing=True, github_token="")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+        self.write(job_action="publish", enable_publishing=True, github_token="dummy-token")
+        self.assertEqual(launcher.read_options(self.path)[0], "publish")
+
+    def test_edit_never_receives_github_token(self):
+        self.write(job_action="edit", job_prompt="make tiny change", enable_edits=True,
+                   gemini_api_key="dummy-gemini-key", github_token="dummy-github-token")
+        with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
+              patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
+              patch.object(launcher.os, "geteuid", return_value=0),
+              patch.object(launcher.os, "setgroups"),
+              patch.object(launcher.os, "setgid"),
+              patch.object(launcher.os, "setuid"),
+              patch.object(launcher.os, "execve", side_effect=SystemExit),
+              patch.object(launcher, "stage_job"),
+              patch.dict("sys.modules", {"preflight": __import__("types").SimpleNamespace(check=lambda: 0)})):
+            with self.assertRaises(SystemExit):
+                launcher.main()
+            self.assertNotIn("GITHUB_TOKEN", launcher.os.execve.call_args.args[2])
+
+    def test_publish_never_receives_gemini_key(self):
+        self.write(job_action="publish", job_prompt="", enable_publishing=True,
+                   gemini_api_key="dummy-gemini-key", github_token="dummy-github-token")
+        with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
+              patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
+              patch.object(launcher.os, "geteuid", return_value=0),
+              patch.object(launcher.os, "setgroups"),
+              patch.object(launcher.os, "setgid"),
+              patch.object(launcher.os, "setuid"),
+              patch.object(launcher.os, "execve", side_effect=SystemExit),
+              patch.object(launcher, "stage_job"),
+              patch.dict("sys.modules", {"preflight": __import__("types").SimpleNamespace(check=lambda: 0)})):
+            with self.assertRaises(SystemExit):
+                launcher.main()
+            env = launcher.os.execve.call_args.args[2]
+            self.assertNotIn("GEMINI_API_KEY", env)
+            self.assertEqual(env["GITHUB_TOKEN"], "dummy-github-token")
+
+    def test_options_file_is_root_private(self):
+        self.write(job_action="idle", github_token="dummy-token")
+        from types import SimpleNamespace
+        with (patch.object(launcher.os, "chown") as chown,
+              patch.object(launcher.os, "chmod") as chmod,
+              patch.object(launcher.Path, "stat", return_value=SimpleNamespace(st_uid=0, st_mode=0o100600))):
+            launcher.protect_options(self.path)
+        chown.assert_called_once_with(self.path, 0, 0)
+        chmod.assert_called_once_with(self.path, 0o600)
+
+    def test_rejects_options_symlink_for_privacy(self):
+        original = self.write(job_action="idle", github_token="dummy")
+        link = original.with_name("link.json")
+        link.symlink_to(original)
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.protect_options(link)
 
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
@@ -110,8 +175,9 @@ class OptionsBridge(unittest.TestCase):
 
     def test_no_work_when_idle(self):
         self.write(job_action="idle", job_prompt="", enable_edits=False, gemini_api_key="")
-        with (patch.object(launcher, "read_options", return_value=("idle", "", False, "")),
+        with (patch.object(launcher, "read_options", return_value=("idle", "", False, "", False, "")),
               patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
               patch.object(launcher.os, "setgid"),

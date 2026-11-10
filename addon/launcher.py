@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Home Assistant options bridge: privileged initialization, then one-way UID drop.
 
-No API listener. GitHub token stays in protected options; publishing is disabled. Gemini credentials are passed only to
+No API listener. GitHub token is passed only to an explicitly opted-in publish job. Gemini credentials are passed only to
 explicitly enabled edit jobs, never written into the job file or logs.
 """
 import json
@@ -13,7 +13,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "inspect", "test", "edit"}
+ACTION_SET = {"idle", "prepare", "inspect", "test", "edit", "verify", "publish"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -30,21 +30,35 @@ def read_options(path=OPTIONS):
     action = raw.get("job_action", "idle")
     prompt = raw.get("job_prompt", "")
     enabled = raw.get("enable_edits", False)
+    publish_enabled = raw.get("enable_publishing", False)
     api_key = raw.get("gemini_api_key", "")
     github_token = raw.get("github_token", "")
     if not isinstance(action, str) or action not in ACTION_SET:
         raise ConfigurationError("Unsupported action")
     if not isinstance(prompt, str) or len(prompt) > 3000:
         raise ConfigurationError("Invalid prompt")
-    if not isinstance(enabled, bool):
-        raise ConfigurationError("enable_edits must be boolean")
+    if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool):
+        raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
     if action == "edit" and (not enabled or not prompt.strip() or not api_key.strip()):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
-    if action in {"idle", "prepare", "inspect", "test"} and prompt.strip():
+    if action == "publish" and (not publish_enabled or not github_token.strip()):
+        raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
+    if action in {"idle", "prepare", "inspect", "test", "verify", "publish"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
-    return action, prompt, enabled, api_key
+    return action, prompt, enabled, api_key, publish_enabled, github_token
+
+
+def protect_options(path=OPTIONS):
+    """Keep raw Home Assistant credentials unreadable by the coder user."""
+    if path.is_symlink() or not path.is_file():
+        raise ConfigurationError("Unsafe options file")
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o600)
+    info = path.stat()
+    if info.st_uid != 0 or (info.st_mode & 0o077) != 0:
+        raise ConfigurationError("Options file is not root-private")
 
 
 def prepare_directory(path=WORKSPACE):
@@ -86,7 +100,8 @@ def stage_job(action, prompt, path=JOB):
 def main():
     if os.geteuid() != 0:
         raise ConfigurationError("Bootstrap requires root solely for UID drop and storage setup")
-    action, prompt, enabled, api_key = read_options()
+    action, prompt, enabled, api_key, publish_enabled, github_token = read_options()
+    protect_options()
     prepare_directory()
     if action != "idle":
         stage_job(action, prompt)
@@ -104,6 +119,9 @@ def main():
     if action == "edit":
         environment["ENABLE_EDITS"] = "true"
         environment["GEMINI_API_KEY"] = api_key
+    if action == "publish":
+        environment["ENABLE_PUBLISHING"] = "true"
+        environment["GITHUB_TOKEN"] = github_token
     os.setgroups([])
     os.setgid(UID)
     os.setuid(UID)
