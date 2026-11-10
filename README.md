@@ -18,7 +18,7 @@ The queue requires an open issue in `Wood468/crispy-barnacle` **authored by `Woo
 
 The initial pilot **only creates new `docs/worker-task-*.md` files**. It does not edit application code, execute generated code, merge, deploy or make arbitrary GitHub issue changes. It refreshes the checkout, edits one approved file with direct Gemini, confirms scope using the publisher's existing checks, and publishes a **draft PR**. It records the issue and PR number in a durable ledger and waits while the PR is open. Uncertain or interrupted tasks require manual inspection rather than being retried automatically.
 
-To stop: switch Job to `idle`, turn **Enable approved task queue** off, and restart the add-on. `boot: auto` will restart the app into its saved mode after HA restarts; it cannot enable the queue without the flags. Confirm this behaviour in a controlled HA test before leaving it unattended.
+To stop: switch Job to `idle`, turn **Enable approved task queue** off, and restart the add-on. The pilot retains `boot: manual` until a controlled live queue test passes; enable restart-on-boot only after that acceptance test.
 
 ### Delegation boundary
 
