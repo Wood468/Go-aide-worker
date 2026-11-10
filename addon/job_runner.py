@@ -7,12 +7,12 @@ from pathlib import Path
 import subprocess
 import sys
 
-WORKSPACE = Path("/data/workspace")
+WORKSPACE = Path("/data/workspace/source")
 JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
-ALLOWED_ACTIONS = {"inspect", "test", "edit"}
+ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare"}
 MODEL = "gemini/gemini-2.5-flash"
 
 
@@ -34,14 +34,22 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Edits disabled; ENABLE_EDITS must be true")
     if action == "edit" and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini key not configured")
+    if action == "prepare":
+        if prompt.strip() or not os.environ.get("WORKER_PUBLIC_REPOSITORY") or not os.environ.get("ALLOWED_PUBLIC_REPOSITORIES"):
+            raise JobError("Preparation requires configured public repository and empty prompt")
+        if workspace.exists() or workspace.is_symlink() or not workspace.parent.is_dir() or workspace.parent.is_symlink():
+            raise JobError("Preparation requires an empty, safe workspace destination")
+        return action, prompt
     if not workspace.is_dir() or workspace.is_symlink():
         raise JobError("Workspace must be a real directory")
-    if action in {"test", "edit"} and ((workspace / ".git").is_symlink() or not (workspace / ".git").is_dir()):
+    if (workspace / ".git").is_symlink() or not (workspace / ".git").is_dir():
         raise JobError("Workspace must contain a checked-out Git repository")
     return action, prompt
 
 
 def command_for(action, prompt):
+    if action == "prepare":
+        return [sys.executable, "/opt/worker/checkout_repo.py", os.environ["WORKER_PUBLIC_REPOSITORY"]]
     if action == "inspect":
         return ["git", "status", "--short", "--branch"]
     if action == "test":
@@ -65,8 +73,11 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
         if key in os.environ
     }
     env["GIT_TERMINAL_PROMPT"] = "0"
+    if action == "prepare":
+        env["ALLOWED_PUBLIC_REPOSITORIES"] = os.environ["ALLOWED_PUBLIC_REPOSITORIES"]
     process = subprocess.Popen(
-        cmd, cwd=workspace, stdin=subprocess.DEVNULL,
+        cmd, cwd=workspace.parent if action == "prepare" else workspace,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
         env=env,
