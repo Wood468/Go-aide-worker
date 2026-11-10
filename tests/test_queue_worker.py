@@ -50,6 +50,62 @@ class WorkerQueueTests(unittest.TestCase):
         item["body"]+=item["body"]
         self.assertIsNone(q.parse_task(item))
 
+
+    def test_approved_regression_file_is_one_existing_flat_js_test(self):
+        accepted = issue(path="test/attendance-classification.test.mjs")
+        self.assertEqual(q.parse_task(accepted)["path"],
+                         "test/attendance-classification.test.mjs")
+        for path in ("test/new.mjs", "test/one.js", "test/../worker.js",
+                     "test/subdir/task.test.mjs", "src/worker.js",
+                     ".github/workflows/main.yml", "test/missing.test.mjs/other"):
+            with self.subTest(path=path):
+                self.assertIsNone(q.parse_task(issue(path=path)))
+
+    def test_code_task_parses_generated_js_without_executing_it_or_sharing_keys(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            checkout = root / "source"
+            (checkout / "test").mkdir(parents=True)
+            target = checkout / "test/attendance-classification.test.mjs"
+            target.write_text("import test from 'node:test';\\n")
+            (root / "job.json").write_text('{"action":"idle","prompt":""}')
+            ledger = root / "ledger.json"
+            calls = []
+            def runner(command, env):
+                calls.append((command, env))
+                if Path(command[-1]).name == "refresh_repo.py":
+                    return b""
+                if Path(command[-1]).name == "direct_editor.py":
+                    target.write_text("import test from 'node:test';\\ntest('ok',()=>{});\\n")
+                    return b""
+                if command[:2] == ["node", "--check"]:
+                    self.assertEqual(command[2], str(target))
+                    self.assertNotIn("GITHUB_TOKEN", env)
+                    self.assertNotIn("GEMINI_API_KEY", env)
+                    return b""
+                if Path(command[-1]).name == "publisher.py":
+                    return b"Created draft PR #987; review required"
+                self.fail("Unexpected worker command")
+            original_save = q.save_ledger
+            with (patch.object(q, "ROOT", root),
+                  patch.object(q, "CHECKOUT", checkout),
+                  patch.object(q, "save_ledger",
+                               side_effect=lambda state: original_save(state, ledger)),
+                  patch.dict(os.environ, {"GITHUB_TOKEN": "secret-github",
+                                          "GEMINI_API_KEY": "secret-gemini"}),
+                  patch.dict(sys.modules, {"publisher": type("Stub", (), {
+                      "safe_files": staticmethod(lambda _:
+                          ("head", [("test/attendance-classification.test.mjs",
+                                    target.read_bytes())]))})()})):
+                state = {}
+                self.assertTrue(q.perform(q.parse_task(issue(
+                    path="test/attendance-classification.test.mjs")), state,
+                    runner=runner))
+            self.assertEqual(len(calls), 4)
+            self.assertEqual(calls[2][0][:2], ["node", "--check"])
+            self.assertNotIn("GITHUB_TOKEN", calls[1][1])
+            self.assertNotIn("GEMINI_API_KEY", calls[3][1])
+            self.assertEqual(state["10"]["state"], "submitted")
     def test_no_duplicate_jobs(self):
         with tempfile.TemporaryDirectory() as folder:
             ledger=Path(folder)/"ledger.json"
