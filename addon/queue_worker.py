@@ -230,6 +230,48 @@ def recover_pilot(path=LEDGER, fetch=github_read, pilot_issue=PILOT_ISSUE):
     return True
 
 
+
+def acknowledge_merged_code_pilot(path=LEDGER, fetch=github_read):
+    """One-off reconciliation only: the already-merged, reviewed issue #465 PR #467.
+
+    This never retries an edit, authorises a new task, merges or writes GitHub.
+    """
+    state = read_ledger(path)
+    previous = state.get("465")
+    if (not isinstance(previous, dict) or previous.get("state") != "needs-review"
+            or previous.get("attempts") != 2 or "pr" in previous):
+        raise QueueError("Exact code pilot acknowledgement not eligible")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/465")
+    pr = fetch("https://api.github.com/repos/" + REPO + "/pulls/467")
+    if not isinstance(issue, dict) or not isinstance(pr, dict):
+        raise QueueError("Reviewed issue or merged PR unavailable")
+    task_line = TASK_RE.findall(issue.get("body", "") or "")
+    try:
+        task = json.loads(task_line[0]) if len(task_line) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    if (issue.get("number") != 465 or issue.get("state") != "closed"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or not str(issue.get("title", "")).startswith("[GO-WORKER] ")
+            or task.get("path") != "test/attendance-classification.test.mjs"):
+        raise QueueError("Exact approved task identity not verified")
+    base, head = pr.get("base") or {}, pr.get("head") or {}
+    merged_sha = pr.get("merge_commit_sha", "")
+    if (pr.get("number") != 467 or pr.get("state") != "closed"
+            or pr.get("merged") is not True or not pr.get("merged_at")
+            or (pr.get("merged_by") or {}).get("login", "").lower() != "wood468"
+            or pr.get("title") != "Worker: issue #465 draft changes"
+            or "Source task: #465" not in (pr.get("body") or "")
+            or base.get("ref") != "main"
+            or not str(head.get("ref", "")).startswith("worker/review-")
+            or not isinstance(merged_sha, str) or not re.fullmatch(r"[a-f0-9]{40}", merged_sha)):
+        raise QueueError("Exact merged review PR not verified")
+    state["465"] = {"state": "submitted", "pr": 467, "attempts": 2}
+    save_ledger(state, path)
+    print("Verified merged worker issue #465 and PR #467 acknowledged; no retry", flush=True)
+    return True
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -321,7 +363,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "ack_code_pilot"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -342,6 +384,8 @@ def main():
             recover_pilot()
         elif mode == "recover_code_pilot":
             recover_pilot(pilot_issue=465)
+        elif mode == "ack_code_pilot":
+            acknowledge_merged_code_pilot()
         else:
             once(scan=(mode == "scan"))
 
