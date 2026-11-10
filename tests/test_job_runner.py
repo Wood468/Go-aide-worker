@@ -156,6 +156,11 @@ class RestrictedJobs(unittest.TestCase):
                 self.assertNotIn("GEMINI_API_KEY", popen.call_args.kwargs["env"])
                 self.assertNotIn("GITHUB_TOKEN", popen.call_args.kwargs["env"])
 
+    def test_queue_reset_command_only_accepts_issue_number(self):
+        self.assertEqual(runner.command_for("queue_reset","462")[-2:],["reset","462"])
+        with self.assertRaises(runner.JobError):
+            runner.validate_job(self.job("queue_reset","rm -rf /"),self.workspace)
+
     def test_queue_scan_is_readonly_and_credential_free(self):
         import json
         with tempfile.TemporaryDirectory() as temp:
