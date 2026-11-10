@@ -15,7 +15,7 @@ JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
-ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "publish_test", "probe", "direct_edit"}
+ALLOWED_ACTIONS = {"refresh", "inspect", "test", "edit", "prepare", "verify", "publish", "publish_test", "probe", "direct_edit"}
 MODEL = "gemini/gemini-3.5-flash-lite"
 
 
@@ -92,7 +92,7 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Gemini API key not configured for probe")
     if action in {"publish", "publish_test"} and (os.environ.get("ENABLE_PUBLISHING") != "true" or not os.environ.get("GITHUB_TOKEN")):
         raise JobError("Publishing disabled or token missing")
-    if action in {"inspect", "test", "verify", "publish", "publish_test", "probe"} and prompt.strip():
+    if action in {"refresh", "inspect", "test", "verify", "publish", "publish_test", "probe"} and prompt.strip():
         raise JobError("Non-edit jobs cannot include a prompt")
     if action == "prepare":
         if prompt.strip() or not os.environ.get("WORKER_PUBLIC_REPOSITORY") or not os.environ.get("ALLOWED_PUBLIC_REPOSITORIES"):
@@ -114,6 +114,8 @@ def command_for(action, prompt):
         return [sys.executable, "/opt/worker/checkout_repo.py", os.environ["WORKER_PUBLIC_REPOSITORY"]]
     if action == "inspect":
         return ["git", "status", "--short", "--branch"]
+    if action == "refresh":
+        return [sys.executable, "/opt/worker/refresh_repo.py"]
     if action == "test":
         return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     if action == "publish":

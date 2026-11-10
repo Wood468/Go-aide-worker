@@ -8,6 +8,10 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.3.7: refresh the isolated public checkout
+
+An explicitly requested `refresh` job clones current public `Wood468/crispy-barnacle` into an isolated temporary directory, swaps the checkout only on success, and deletes the prior local worker checkout. This removes stale and unreviewed local worker-only edits; it never modifies GitHub. It receives no Gemini key or GitHub token. Use before preparing a new independent task so draft-PR publication is based on current main.
+
 ## v0.3.6: GitHub draft-PR publishing roundtrip test
 
 The explicitly opted-in `publish_test` action validates GitHub access by creating one temporary branch and draft PR based on the latest `main`. It then closes the PR and deletes the temporary branch. No change is merged into main. The test does not read the worker's edited checkout, invoke Gemini or publish any local files. Its GitHub token is only passed to the isolated publisher. Check GitHub after testing to confirm PR closure and branch deletion. Publishing remains disabled by default.

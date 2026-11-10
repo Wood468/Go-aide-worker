@@ -141,6 +141,21 @@ class RestrictedJobs(unittest.TestCase):
         with patch.dict(os.environ, {"ENABLE_PUBLISHING": "true", "GITHUB_TOKEN": "dummy"}):
             self.assertEqual(runner.validate_job(self.job("publish"), self.workspace)[0], "publish")
 
+    def test_refresh_runs_without_gemini_or_github_credential(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("refresh")))
+            process = MagicMock()
+            process.wait.return_value = 0
+            with (patch.dict(os.environ, {"GEMINI_API_KEY": "dummy", "GITHUB_TOKEN": "dummy"}),
+                  patch.object(runner.subprocess, "Popen", return_value=process) as popen):
+                self.assertEqual(runner.run(job, self.workspace), 0)
+                self.assertEqual(popen.call_args.args[0],
+                                 [runner.sys.executable, "/opt/worker/refresh_repo.py"])
+                self.assertNotIn("GEMINI_API_KEY", popen.call_args.kwargs["env"])
+                self.assertNotIn("GITHUB_TOKEN", popen.call_args.kwargs["env"])
+
     def test_publish_test_requires_optin_and_uses_smoke_only(self):
         with patch.dict(os.environ, {"ENABLE_PUBLISHING": "false", "GITHUB_TOKEN": "dummy"}):
             with self.assertRaises(runner.JobError):
