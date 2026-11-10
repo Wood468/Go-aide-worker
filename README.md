@@ -8,6 +8,22 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.4.0: approved task queue (limited pilot)
+
+This version includes an **opt-in** long-running queue that polls public GitHub Issues at most every 10 minutes. Queue Loop requires `enable_queue`, `enable_edits` and `enable_publishing` to be true and both keys saved. Queue Scan is read-only and does not require credentials.
+
+The queue requires an open issue in `Wood468/crispy-barnacle` **authored by `Wood468`**, with title beginning `[GO-WORKER] `, the `go-worker-approved` label and exactly one machine-readable line in its body, e.g.:
+
+    GO_WORKER_TASK_JSON:{"path":"docs/worker-task-example.md","instruction":"Write a brief documentation note explaining a specific verified regression and its acceptance criteria."}
+
+The initial pilot **only creates new `docs/worker-task-*.md` files**. It does not edit application code, execute generated code, merge, deploy or make arbitrary GitHub issue changes. It refreshes the checkout, edits one approved file with direct Gemini, confirms scope using the publisher's existing checks, and publishes a **draft PR**. It records the issue and PR number in a durable ledger and waits while the PR is open. Uncertain or interrupted tasks require manual inspection rather than being retried automatically.
+
+To stop: switch Job to `idle`, turn **Enable approved task queue** off, and restart the add-on. The pilot retains `boot: manual` until a controlled live queue test passes; enable restart-on-boot only after that acceptance test.
+
+### Delegation boundary
+
+The main ChatGPT lead creates narrowly scoped issues and explicitly adds `go-worker-approved` only after checking overlap with current PRs, scope, and safety. The worker owns no merge or deployment authority. The automation must be reviewed and its pilot scope broadened only after real queue acceptance tests.
+
 ## v0.3.7: refresh the isolated public checkout
 
 An explicitly requested `refresh` job clones current public `Wood468/crispy-barnacle` into an isolated temporary directory, swaps the checkout only on success, and deletes the prior local worker checkout. This removes stale and unreviewed local worker-only edits; it never modifies GitHub. It receives no Gemini key or GitHub token. Use before preparing a new independent task so draft-PR publication is based on current main.

@@ -1,13 +1,16 @@
 configuration:
   job_action:
     name: Job to run
-    description: "Idle does nothing. Refresh securely replaces the old isolated public checkout with latest main. Probe tests Gemini API. Direct Edit uses Gemini to change one selected text file without Aider or shell commands. Verify checks the Gemini smoke-test file. Publish Test creates then closes a temporary draft PR and deletes its branch. Publish submits up to ten allowed files to a new draft PR and is disabled by default."
+    description: "Idle does nothing. Queue Scan is read-only; Queue Loop polls approved issues every ten minutes when enabled. Refresh securely replaces the old isolated public checkout with latest main. Probe tests Gemini API. Direct Edit uses Gemini to change one selected text file without Aider or shell commands. Verify checks the Gemini smoke-test file. Publish Test creates then closes a temporary draft PR and deletes its branch. Publish submits up to ten allowed files to a new draft PR and is disabled by default."
   edit_files:
     name: Files to edit (comma-separated)
     description: "Optional, up to five safe repository-relative file paths. Explicit file selection makes Aider more reliable; never enter secrets or system paths."
   job_prompt:
     name: Coding task prompt
     description: "Required only for Edit. Do not paste keys, tokens or other secrets."
+  enable_queue:
+    name: Enable approved task queue
+    description: "Off by default. With Queue Loop, edits one approved documentation task at a time and submits a draft PR. Requires both editing and publishing explicitly enabled."
   enable_publishing:
     name: Allow draft PR publishing
     description: "Off by default. Requires a GitHub token, permits new worker branch plus draft PR only, never merge."

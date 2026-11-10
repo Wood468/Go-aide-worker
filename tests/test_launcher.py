@@ -170,6 +170,30 @@ class OptionsBridge(unittest.TestCase):
         with self.assertRaises(launcher.ConfigurationError):
             launcher.read_options(self.path)
 
+    def test_queue_execution_requires_three_optins_and_both_secrets(self):
+        common = {"job_action":"queue_loop", "job_prompt":"", "enable_queue":True,
+                  "enable_edits":True, "enable_publishing":True,
+                  "gemini_api_key":"dummy-gemini", "github_token":"dummy-github"}
+        for changed in ({"enable_queue":False}, {"enable_edits":False},
+                        {"enable_publishing":False}, {"gemini_api_key":""},
+                        {"github_token":""}):
+            with self.subTest(changed=changed):
+                self.write(**dict(common,**changed))
+                with self.assertRaises(launcher.ConfigurationError):
+                    launcher.read_options(self.path)
+        self.write(**common)
+        self.assertEqual(launcher.read_options(self.path)[0],"queue_loop")
+
+    def test_queue_scan_does_not_require_credentials(self):
+        self.write(job_action="queue_scan", enable_queue=False)
+        self.assertEqual(launcher.read_options(self.path)[0],"queue_scan")
+
+    def test_queue_credentials_never_used_for_idle(self):
+        self.write(job_action="idle",enable_queue=True,enable_edits=True,
+                   enable_publishing=True,gemini_api_key="dummy-gemini",
+                   github_token="dummy-github")
+        self.assertEqual(launcher.read_options(self.path)[0],"idle")
+
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
         with self.assertRaises(launcher.ConfigurationError):

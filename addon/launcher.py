@@ -14,7 +14,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test"}
+ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -33,6 +33,7 @@ def read_options(path=OPTIONS):
     edit_files = raw.get("edit_files", "")
     enabled = raw.get("enable_edits", False)
     publish_enabled = raw.get("enable_publishing", False)
+    queue_enabled = raw.get("enable_queue", False)
     api_key = raw.get("gemini_api_key", "")
     github_token = raw.get("github_token", "")
     if not isinstance(action, str) or action not in ACTION_SET:
@@ -51,17 +52,19 @@ def read_options(path=OPTIONS):
             raise ConfigurationError("Unsafe edit file path")
     if action not in {"edit", "direct_edit"} and selected:
         raise ConfigurationError("File selection is only available for edit jobs")
-    if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool):
+    if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool) or not isinstance(queue_enabled, bool):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
+    if action in {"queue_once", "queue_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
+        raise ConfigurationError("Queue requires all three opt-ins and both credentials")
     if action == "probe" and not api_key.strip():
         raise ConfigurationError("Probe requires Gemini key")
     if action in {"edit", "direct_edit"} and (not enabled or not prompt.strip() or not api_key.strip()):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
     if action in {"publish", "publish_test"} and (not publish_enabled or not github_token.strip()):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
-    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe"} and prompt.strip():
+    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe", "queue_scan", "queue_once", "queue_loop"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
     return action, prompt, enabled, api_key, publish_enabled, github_token, ",".join(selected)
 
@@ -138,6 +141,10 @@ def main():
         environment["EDIT_FILES"] = edit_files
     if action == "probe":
         environment["GEMINI_API_KEY"] = api_key
+    if action in {"queue_once", "queue_loop"}:
+        environment["GEMINI_API_KEY"] = api_key
+        environment["GITHUB_TOKEN"] = github_token
+        environment["ENABLE_QUEUE"] = "true"
     if action in {"publish", "publish_test"}:
         environment["ENABLE_PUBLISHING"] = "true"
         environment["GITHUB_TOKEN"] = github_token

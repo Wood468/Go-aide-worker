@@ -140,10 +140,15 @@ def publish(workspace, token, request=api, branch_id=None):
     if not re.fullmatch(r"worker/review-[a-f0-9]{12}", branch):
         raise PublishError("Invalid worker branch")
     request(token, "POST", "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit["sha"]})
+    source_issue = os.environ.get("WORKER_ISSUE_NUMBER", "")
+    if source_issue and (not source_issue.isdecimal() or len(source_issue) > 10):
+        raise PublishError("Invalid source issue identifier")
     pr = request(token, "POST", "/pulls", {
-        "title": "Worker: proposed isolated changes (review required)",
+        "title": ("Worker: issue #" + source_issue + " draft changes" if source_issue else
+                  "Worker: proposed isolated changes (review required)"),
         "head": branch, "base": "main", "draft": True,
-        "body": "Automated isolated worker proposal. Requires human review and CI. No automatic merge or deployment."})
+        "body": ("Source task: #" + source_issue + "\n\n" if source_issue else "") +
+                "Automated isolated worker proposal. Requires human review and CI. No automatic merge or deployment."})
     if not pr.get("draft") or not isinstance(pr.get("number"), int):
         raise PublishError("Draft PR confirmation missing")
     return pr["number"]
