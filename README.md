@@ -8,6 +8,10 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.3.1: no-op edit diagnostics
+
+The first Gemini/Aider edit job returned process exit code 0 but the verification task found no matching smoke file. This release keeps raw model/provider output private in an unlinked temporary file, emits only a fixed diagnostic category and changed-path count, and treats a zero-change exit code as failure. The `verify` task distinguishes a missing file from one with incorrect contents. Do not infer a successful code contribution from process exit code alone.
+
 ## v0.3.0: verification and restricted draft PR publishing
 
 - `verify` checks whether the exact local Gemini smoke-test file was created, without displaying its contents.
