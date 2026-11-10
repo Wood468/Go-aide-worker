@@ -167,18 +167,10 @@ def perform(task, state, fetch=github_read, runner=child_run):
         target = CHECKOUT / task["path"]
         if target.exists() or target.is_symlink() or not target.parent.is_dir():
             raise QueueError("Task must create a new documentation file")
-        # Store only the editing instruction, never a credential.
-        job = JOB_FILE
-        if not job.is_file() or job.is_symlink():
-            raise QueueError("Invalid worker job file")
-        temp = job.with_name(".queue-job-next.json")
-        if temp.exists() or temp.is_symlink():
-            raise QueueError("Queue job file collision")
-        temp.write_text(json.dumps({"action": "direct_edit", "prompt": task["instruction"]}))
-        os.replace(temp, job)
-        print("Queue phase: edit", flush=True)
+        # Pass bounded instruction only to the direct editor process (no root-owned job file writes).
         runner([sys.executable, "/opt/worker/direct_editor.py"],
-               child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"]))
+               child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"],
+                         QUEUE_TASK_PROMPT=task["instruction"]))
         import publisher
         _head, changed = publisher.safe_files(CHECKOUT)
         if [name for name, _data in changed] != [task["path"]]:
