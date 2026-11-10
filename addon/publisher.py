@@ -71,6 +71,11 @@ def safe_files(workspace):
                 or Path(rel).suffix not in ALLOWED_SUFFIXES):
             raise PublishError("Restricted changed path")
         path = workspace / rel
+        cursor = workspace
+        for component in rel.split("/")[:-1]:
+            cursor = cursor / component
+            if cursor.is_symlink() or not cursor.is_dir():
+                raise PublishError("Unsafe parent directory in changed path")
         if not path.is_file() or path.is_symlink():
             raise PublishError("No symlinks or deletions may be published")
         mode = path.stat().st_mode
