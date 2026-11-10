@@ -15,7 +15,7 @@ JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
-ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish"}
+ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "probe"}
 MODEL = "gemini/gemini-2.5-flash"
 
 
@@ -88,9 +88,11 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Edits disabled; ENABLE_EDITS must be true")
     if action == "edit" and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini key not configured")
+    if action == "probe" and not os.environ.get("GEMINI_API_KEY"):
+        raise JobError("Gemini API key not configured for probe")
     if action == "publish" and (os.environ.get("ENABLE_PUBLISHING") != "true" or not os.environ.get("GITHUB_TOKEN")):
         raise JobError("Publishing disabled or token missing")
-    if action in {"inspect", "test", "verify", "publish"} and prompt.strip():
+    if action in {"inspect", "test", "verify", "publish", "probe"} and prompt.strip():
         raise JobError("Non-edit jobs cannot include a prompt")
     if action == "prepare":
         if prompt.strip() or not os.environ.get("WORKER_PUBLIC_REPOSITORY") or not os.environ.get("ALLOWED_PUBLIC_REPOSITORIES"):
@@ -116,6 +118,8 @@ def command_for(action, prompt):
         return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     if action == "publish":
         return [sys.executable, "/opt/worker/publisher.py"]
+    if action == "probe":
+        return [sys.executable, "/opt/worker/gemini_probe.py"]
     files = selected_edit_files(WORKSPACE)
     file_args = [arg for file in files for arg in ("--file", file)]
     return [
@@ -192,6 +196,8 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if action == "publish":
         env.pop("GEMINI_API_KEY", None)
         env.pop("ENABLE_EDITS", None)
+    if action == "probe":
+        env["GEMINI_API_KEY"] = os.environ["GEMINI_API_KEY"]
     # Raw model/API output is held in an unlinked temporary file, never HA logs.
     with tempfile.TemporaryFile(mode="w+b") as private_output:
         process = subprocess.Popen(
@@ -222,6 +228,10 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
             if return_code == 0 and target_changes == 0:
                 print("Edit did not change intended repository files", flush=True)
                 return 4
+    if action == "probe":
+        labels = {0: "success", 11: "authentication-or-permission", 12: "quota",
+                  13: "model-or-request", 14: "network-or-service", 15: "unexpected-model-response"}
+        print("Gemini API probe: " + labels.get(return_code, "unknown-error"), flush=True)
     print(f"Job finished with exit code {return_code}", flush=True)
     return return_code
 
