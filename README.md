@@ -1,8 +1,18 @@
 # GO Field Notes — isolated Aider worker (prototype)
 
-**Experimental. Installed in Home Assistant; GitHub publishing is not implemented.**
+**Experimental. Manual draft-PR publishing was tested in Home Assistant. The approved queue is a new opt-in feature and has not been activated or installed until its runtime is verified.**
 
 This draft add-on contains a **local-only restricted job runner**, not a network service or autonomous issue/PR agent.
+
+## v0.3.8 — approved GitHub task queue (disabled by default)
+
+`queue/manifest.json` on the worker repository's reviewed `main` branch is the only task authorisation source. It starts with `paused: true` and zero tasks. An approved task selects exactly one `test/*.mjs` or `test/*.py` file in public `Wood468/crispy-barnacle` and contains a bounded prompt. Queue mode is never started implicitly: select `job_action: queue` and enable both editing and publishing deliberately **only after this version passes its isolated tests and Home Assistant runtime verification**.
+
+When enabled, the queue checks the public manifest every five minutes, holds one process lock, claims a task in a persistent /data/workspace ledger before starting, refreshes a clean checkout, uses Gemini to edit only the authorised file, runs a credential-free test, and uses a **separate GitHub-only subprocess** to open a draft PR. A task ID appears in the draft PR, and completed/failed tasks are terminal in the local ledger (interrupted jobs are not retried). Failures attempt a non-sensitive issue #428 comment if the scoped token permits; the local ledger and private Supervisor logs are always available.
+
+**Emergency pause:** set `paused: true` in the reviewed manifest (halts new work on the next poll), or immediately set `job_action: idle`, turn both permissions off, and restart/stop the add-on. No queue task can merge, deploy or update app main directly. Never provide secrets in tasks; the runner excludes GitHub credentials from Gemini and test subprocesses and excludes Gemini credentials from publisher subprocesses.
+
+**Initial rollout gate:** offline test suite green, confirm disabled default, validate a harmless approved task on a disposable checkout, verify publisher rejection/CI and absence of main writes, then separately activate the queue if desired. v0.3.7 does not know this mode and stays manual/Idle until upgraded.
 
 ## GitHub token field (v0.2.1)
 
