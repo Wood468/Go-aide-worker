@@ -68,6 +68,19 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertTrue(q.has_pending_review({"10":{"state":"needs-review"}},
                          fetch=lambda url:self.fail("No fetch needed")))
 
+    def test_reset_only_reviewed_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/"ledger.json"
+            q.save_ledger({"462":{"state":"needs-review"}},ledger)
+            with patch.object(q,"LEDGER",ledger):
+                q.reset_reviewed_issue("462")
+            self.assertEqual(q.read_ledger(ledger),{})
+            with patch.object(q,"LEDGER",ledger):
+                with self.assertRaises(q.QueueError):
+                    q.reset_reviewed_issue("462")
+                with self.assertRaises(q.QueueError):
+                    q.reset_reviewed_issue("../462")
+
     def test_no_credentials_in_scanner_environment(self):
         self.assertNotIn("GEMINI_API_KEY",q.child_env())
         self.assertNotIn("GITHUB_TOKEN",q.child_env())
@@ -95,6 +108,7 @@ class WorkerQueueTests(unittest.TestCase):
             with (patch.object(q,"ROOT",root),
                   patch.object(q,"CHECKOUT",checkout),
                   patch.object(q,"LEDGER",ledger),
+                  patch.object(q,"JOB_FILE",job),
                   patch.object(q,"save_ledger",side_effect=lambda st:original_save(st,ledger)),
                   patch.dict(os.environ,{"GEMINI_API_KEY":"fake-gemini","GITHUB_TOKEN":"fake-github"}),
                   patch.dict(sys.modules,{"publisher":type("Stub",(),{
@@ -116,6 +130,7 @@ class WorkerQueueTests(unittest.TestCase):
             with (patch.object(q,"ROOT",root),
                   patch.object(q,"CHECKOUT",root/"source"),
                   patch.object(q,"LEDGER",root/"ledger.json"),
+                  patch.object(q,"JOB_FILE",root/"job.json"),
                   patch.object(q,"save_ledger",side_effect=lambda st:original_save(st,root/"ledger.json")),
                   patch.dict(os.environ,{"GEMINI_API_KEY":"test","GITHUB_TOKEN":"test"})):
                 state={}
