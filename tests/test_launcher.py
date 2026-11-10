@@ -215,5 +215,39 @@ class OptionsBridge(unittest.TestCase):
             submit.assert_not_called()
 
 
+
+    def test_queue_needs_explicit_enable_flags_and_both_keys(self):
+        base = dict(job_action="queue", job_prompt="", edit_files="",
+                    enable_edits=True, enable_publishing=True,
+                    gemini_api_key="gemini-placeholder", github_token="github-placeholder")
+        for change in ({"enable_edits": False}, {"enable_publishing": False},
+                       {"gemini_api_key": ""}, {"github_token": ""},
+                       {"job_prompt": "do something"}):
+            self.write(**(base | change))
+            with self.assertRaises(launcher.ConfigurationError):
+                launcher.read_options(self.path)
+        self.write(**base)
+        self.assertEqual(launcher.read_options(self.path)[0], "queue")
+
+    def test_queue_process_is_opt_in_and_its_children_enforce_credential_separation(self):
+        self.write(job_action="queue", job_prompt="", edit_files="", enable_edits=True,
+                   enable_publishing=True, gemini_api_key="gemini-placeholder",
+                   github_token="github-placeholder")
+        with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
+              patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
+              patch.object(launcher.os, "geteuid", return_value=0),
+              patch.object(launcher.os, "setgroups"),
+              patch.object(launcher.os, "setgid"),
+              patch.object(launcher.os, "setuid"),
+              patch.object(launcher.os, "execve", side_effect=SystemExit) as execution,
+              patch.object(launcher, "stage_job")):
+            with self.assertRaises(SystemExit):
+                launcher.main()
+            self.assertEqual(execution.call_args.args[1][-1], "/opt/worker/queue_runner.py")
+            self.assertEqual(execution.call_args.args[2]["GEMINI_API_KEY"], "gemini-placeholder")
+            self.assertEqual(execution.call_args.args[2]["GITHUB_TOKEN"], "github-placeholder")
+            launcher.stage_job.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()
