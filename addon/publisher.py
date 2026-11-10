@@ -5,6 +5,7 @@ This module is deliberately separate from Aider. The GitHub token is available
 to this process alone for the explicitly opted-in publish action.
 """
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -117,9 +118,11 @@ def api(token, method, endpoint, payload=None):
         raise PublishError("GitHub API unavailable") from None
 
 
-def publish(workspace, token, request=api, branch_id=None):
+def publish(workspace, token, request=api, branch_id=None, task_id=None):
     if not isinstance(token, str) or not token.strip():
         raise PublishError("Missing GitHub token")
+    if task_id is not None and not re.fullmatch(r"[a-z][a-z0-9-]{5,63}", task_id):
+        raise PublishError("Invalid approved worker task ID")
     local_head, files = safe_files(workspace)
     ref = request(token, "GET", "/git/ref/heads/main")
     base_sha = ref["object"]["sha"]
@@ -143,7 +146,9 @@ def publish(workspace, token, request=api, branch_id=None):
     pr = request(token, "POST", "/pulls", {
         "title": "Worker: proposed isolated changes (review required)",
         "head": branch, "base": "main", "draft": True,
-        "body": "Automated isolated worker proposal. Requires human review and CI. No automatic merge or deployment."})
+        "body": ("Automated isolated worker proposal. Requires human review and CI. "
+                 "No automatic merge or deployment." +
+                 ("\\n\\nGO-WORKER-TASK:" + task_id if task_id else ""))})
     if not pr.get("draft") or not isinstance(pr.get("number"), int):
         raise PublishError("Draft PR confirmation missing")
     return pr["number"]
@@ -204,7 +209,10 @@ def main():
             number = smoke_roundtrip(token)
             print("Temporary draft PR #" + str(number) + " created, closed, branch deleted", flush=True)
         elif len(sys.argv) == 1:
-            number = publish(Path("/data/workspace/source"), token)
+            task_id = os.environ.get("WORKER_QUEUE_TASK_ID") or None
+            branch_id = hashlib.sha256(task_id.encode()).hexdigest()[:12] if task_id else None
+            number = publish(Path("/data/workspace/source"), token,
+                             branch_id=branch_id, task_id=task_id)
             print("Created draft PR #" + str(number) + "; review required", flush=True)
         else:
             raise PublishError("Unsupported publishing action")
