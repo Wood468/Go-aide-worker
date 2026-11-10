@@ -167,7 +167,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
             raise QueueError("Task must create a new documentation file")
         # Store only the editing instruction, never a credential.
         job = ROOT / "job.json"
-        if not job.is_file() or job.is_symlink():
+        if job.is_symlink() or (job.exists() and not job.is_file()):
             raise QueueError("Invalid worker job file")
         temp = ROOT / ".queue-job-next.json"
         if temp.exists() or temp.is_symlink():
