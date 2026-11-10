@@ -14,7 +14,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test"}
+ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -55,6 +55,8 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
+    if action == "queue" and (not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
+        raise ConfigurationError("Queue requires deliberate edit/publish opt-in and both credentials")
     if action == "probe" and not api_key.strip():
         raise ConfigurationError("Probe requires Gemini key")
     if action in {"edit", "direct_edit"} and (not enabled or not prompt.strip() or not api_key.strip()):
@@ -119,7 +121,7 @@ def main():
     action, prompt, enabled, api_key, publish_enabled, github_token, edit_files = read_options()
     protect_options()
     prepare_directory()
-    if action != "idle":
+    if action not in {"idle", "queue"}:
         stage_job(action, prompt)
     # Set only the environment needed by the unprivileged worker.
     environment = {
@@ -136,6 +138,9 @@ def main():
         environment["ENABLE_EDITS"] = "true"
         environment["GEMINI_API_KEY"] = api_key
         environment["EDIT_FILES"] = edit_files
+    if action == "queue":
+        environment["GEMINI_API_KEY"] = api_key
+        environment["GITHUB_TOKEN"] = github_token
     if action == "probe":
         environment["GEMINI_API_KEY"] = api_key
     if action in {"publish", "publish_test"}:
@@ -144,6 +149,9 @@ def main():
     os.setgroups([])
     os.setgid(UID)
     os.setuid(UID)
+    if action == "queue":
+        print("GO Aider queue explicitly enabled; one approved job at a time", flush=True)
+        os.execve(sys.executable, [sys.executable, "/opt/worker/queue_runner.py"], environment)
     if action == "idle":
         print("GO Aider Worker idle; no job scheduled", flush=True)
         os.execve("/usr/bin/sleep", ["sleep", "infinity"], environment)
