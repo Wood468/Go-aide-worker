@@ -113,11 +113,18 @@ def edit(workspace, selected, prompt, key, generator=generate):
 def main():
     try:
         selection = job_runner.selected_edit_files(job_runner.WORKSPACE)
-        with job_runner.JOB_FILE.open(encoding="utf-8") as inp:
-            job = json.load(inp)
-        if not isinstance(job, dict) or job.get("action") != "direct_edit":
-            raise DirectEditError("Unexpected edit job")
-        edit(job_runner.WORKSPACE, selection, job.get("prompt", ""), os.environ.get("GEMINI_API_KEY", ""))
+        queue_prompt = os.environ.get("QUEUE_TASK_PROMPT")
+        if queue_prompt is not None:
+            if not 20 <= len(queue_prompt.strip()) <= 1500:
+                raise DirectEditError("Invalid approved queue prompt")
+            prompt = queue_prompt
+        else:
+            with job_runner.JOB_FILE.open(encoding="utf-8") as inp:
+                job = json.load(inp)
+            if not isinstance(job, dict) or job.get("action") != "direct_edit":
+                raise DirectEditError("Unexpected edit job")
+            prompt = job.get("prompt", "")
+        edit(job_runner.WORKSPACE, selection, prompt, os.environ.get("GEMINI_API_KEY", ""))
         print("Direct Gemini selected-file edit completed", flush=True)
     except (DirectEditError, job_runner.JobError, ValueError, OSError, TypeError) as e:
         # These errors are controlled, but never expose arbitrary exception content.
