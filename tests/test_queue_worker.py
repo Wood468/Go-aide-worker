@@ -101,7 +101,7 @@ class WorkerQueueTests(unittest.TestCase):
                 state={}
                 self.assertTrue(q.perform(q.parse_task(issue()),state,
                                           fetch=lambda url:{"state":"closed"},runner=runner))
-                self.assertEqual(state["10"],{"state":"submitted","pr":999})
+                self.assertEqual(state["10"],{"state":"submitted","pr":999,"attempts":1})
             self.assertEqual(json.loads(job.read_text()), {
                 "action": "direct_edit", "prompt": q.parse_task(issue())["instruction"]
             })
@@ -127,5 +127,94 @@ class WorkerQueueTests(unittest.TestCase):
                               runner=lambda cmd,env: (_ for _ in ()).throw(q.QueueError("offline")))
                 self.assertEqual(state["10"]["state"],"needs-review")
 
+
+
+    def test_queue_status_is_read_only_and_redacts_prompts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462": {"state": "needs-review", "prompt": "SENSITIVE"}},
+                          ledger)
+            from contextlib import redirect_stdout
+            from io import StringIO
+            output = StringIO()
+            with redirect_stdout(output):
+                state = q.ledger_summary(ledger)
+            self.assertIn("Worker queue #462: needs-review", output.getvalue())
+            self.assertNotIn("SENSITIVE", output.getvalue())
+            self.assertEqual(state["462"]["state"], "needs-review")
+
+    def test_pilot_recovery_requires_approved_issue_and_no_matching_pr(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462": {"state": "needs-review"}}, ledger)
+            calls = []
+            def fetch(url):
+                calls.append(url)
+                if url.endswith("/issues/462"):
+                    return issue(number=462, path="docs/worker-task-queue-pilot.md")
+                if "/pulls?" in url:
+                    return []
+                self.fail("Unexpected read URL")
+            self.assertTrue(q.recover_pilot(ledger, fetch=fetch))
+            self.assertEqual(q.read_ledger(ledger)["462"],
+                             {"state": "approved-pilot-retry", "attempts": 1})
+            item = q.parse_task(issue(number=462,
+                                     path="docs/worker-task-queue-pilot.md"))
+            self.assertTrue(q.approved_for_dispatch(item, q.read_ledger(ledger)))
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=fetch)
+            self.assertEqual(len(calls), 2)
+
+    def test_pilot_recovery_fails_closed_on_existing_pr_or_changed_approval(self):
+        for existing in ([{"title": "Worker: issue #462 draft changes",
+                           "body": ""}],
+                         [{"title": "Some PR", "body": "Source task: #462"}],
+                         [{}] * 100):
+            with self.subTest(existing=existing[:1]):
+                with tempfile.TemporaryDirectory() as folder:
+                    ledger = Path(folder) / "ledger.json"
+                    q.save_ledger({"462": {"state": "needs-review"}}, ledger)
+                    def fetch(url):
+                        if "/issues/462" in url:
+                            return issue(number=462,
+                                         path="docs/worker-task-queue-pilot.md")
+                        return existing
+                    with self.assertRaises(q.QueueError):
+                        q.recover_pilot(ledger, fetch=fetch)
+                    self.assertEqual(q.read_ledger(ledger)["462"]["state"],
+                                     "needs-review")
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462": {"state": "needs-review", "attempts": 2}},
+                          ledger)
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=lambda *_: self.fail("no remote reads"))
+
+    def test_second_pilot_failure_cannot_be_recovered_a_third_time(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "source").mkdir()
+            ledger = root / "ledger.json"
+            state = {"462": {"state": "approved-pilot-retry", "attempts": 1}}
+            original_save = q.save_ledger
+            with (patch.object(q, "ROOT", root),
+                  patch.object(q, "CHECKOUT", root / "source"),
+                  patch.object(q, "save_ledger",
+                               side_effect=lambda st: original_save(st, ledger)),
+                  patch.dict(os.environ, {"GEMINI_API_KEY": "dummy",
+                                          "GITHUB_TOKEN": "dummy"})):
+                with self.assertRaises(q.QueueError):
+                    q.perform(q.parse_task(issue(number=462,
+                                   path="docs/worker-task-queue-pilot.md")),
+                              state, runner=lambda *_: (_ for _ in ()).throw(
+                                  q.QueueError("controlled failure")))
+            self.assertEqual(state["462"],
+                             {"state": "needs-review", "attempts": 2})
+            self.assertFalse(q.approved_for_dispatch(
+                q.parse_task(issue(number=462,
+                                   path="docs/worker-task-queue-pilot.md")),
+                state))
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=lambda *_: self.fail("no remote"))
 
 if __name__=="__main__":unittest.main()
