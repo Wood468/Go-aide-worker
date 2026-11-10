@@ -200,5 +200,31 @@ class DraftPublisher(unittest.TestCase):
                 self.assertNotIn("GEMINI_API_KEY", call.kwargs["env"])
 
 
+
+    def test_queue_task_marker_attached_only_to_approved_draft(self):
+        (self.root / "README.md").write_text("small reviewed change\\n")
+        operations = []
+        def request(token, method, endpoint, payload=None):
+            operations.append((method, endpoint, payload))
+            if endpoint == "/git/ref/heads/main":
+                return {"object": {"sha": self.sha}}
+            if endpoint == "/git/commits/" + self.sha:
+                return {"tree": {"sha": "tree"}}
+            if endpoint in ("/git/blobs", "/git/trees", "/git/commits"):
+                return {"sha": "sha"}
+            if endpoint == "/pulls":
+                return {"draft": True, "number": 987}
+            return {}
+        pr = publisher.publish(self.root, "dummy-token", request,
+                               branch_id="abcdabcdabcd", task_id="test-global-visibility")
+        self.assertEqual(pr, 987)
+        body = next(payload["body"] for method, endpoint, payload in operations
+                    if method == "POST" and endpoint == "/pulls")
+        self.assertIn("GO-WORKER-TASK:test-global-visibility", body)
+        self.assertNotIn("dummy-token", body)
+        with self.assertRaises(publisher.PublishError):
+            publisher.publish(self.root, "dummy-token", request,
+                              branch_id="abcdabcdabcd", task_id="../../unsafe")
+
 if __name__ == "__main__":
     unittest.main()
