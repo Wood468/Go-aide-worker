@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 WORKSPACE = Path("/data/workspace/source")
 JOB_FILE = Path("/data/job.json")
@@ -66,6 +67,38 @@ def command_for(action, prompt):
     ]
 
 
+def classify_edit_output(raw):
+    """Classify model output without disclosing it to Home Assistant logs."""
+    raw = raw[:200_000].lower()
+    categories = (
+        ((b"rate limit", b"429", b"quota exceeded", b"resource_exhausted"), "quota-or-rate-limit"),
+        ((b"401", b"invalid api key", b"authentication failed", b"api key not valid"), "authentication"),
+        ((b"403", b"permission denied", b"permission_denied"), "permission"),
+        ((b"model not found", b"unknown model", b"404"), "model-unavailable"),
+        ((b"connection error", b"connection failed", b"timeout", b"network unreachable"), "network"),
+        ((b"no files", b"no changes", b"no edits", b"did not make"), "no-edit-response"),
+    )
+    for needles, label in categories:
+        if any(needle in raw for needle in needles):
+            return label
+    return "no-recognised-provider-error"
+
+
+def count_changes(workspace):
+    """Return only a count of dirty paths, never filenames or contents."""
+    environment = {"PATH": "/usr/bin:/bin", "HOME": "/home/coder",
+                   "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                   "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
+                   "GIT_CONFIG_KEY_0": "core.hooksPath",
+                   "GIT_CONFIG_VALUE_0": "/dev/null"}
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+        cwd=workspace, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, check=False)
+    if result.returncode:
+        raise JobError("Cannot inspect changed files")
+    return sum(1 for part in result.stdout.split(b"\0") if part)
+
 def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if job_file.is_symlink() or not job_file.is_file() or job_file.stat().st_size > MAX_JOB_BYTES:
         raise JobError("Missing, symlinked, or oversized job file")
@@ -90,23 +123,33 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if action == "publish":
         env.pop("GEMINI_API_KEY", None)
         env.pop("ENABLE_EDITS", None)
-    process = subprocess.Popen(
-        cmd, cwd=workspace.parent if action == "prepare" else workspace,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        env=env,
-    )
-    try:
-        return_code = process.wait(timeout=TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        # Kill the whole process group, including children that ignore SIGTERM.
+    # Raw model/API output is held in an unlinked temporary file, never HA logs.
+    with tempfile.TemporaryFile(mode="w+b") as private_output:
+        process = subprocess.Popen(
+            cmd, cwd=workspace.parent if action == "prepare" else workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=private_output if action == "edit" else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if action == "edit" else subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # The whole group already exited.
-        process.wait()
-        raise JobError("Job timed out") from exc
+            return_code = process.wait(timeout=TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise JobError("Job timed out") from exc
+        if action == "edit":
+            private_output.seek(0)
+            category = classify_edit_output(private_output.read(200_000))
+            changed = count_changes(workspace)
+            print(f"Aider diagnostic: {category}; changed paths: {changed}", flush=True)
+            if return_code == 0 and changed == 0:
+                print("Edit did not produce repository changes", flush=True)
+                return 4
     print(f"Job finished with exit code {return_code}", flush=True)
     return return_code
 
