@@ -18,7 +18,7 @@ ROOT = Path("/data/workspace")
 CHECKOUT = ROOT / "source"
 LEDGER = ROOT / "go-queue-ledger.json"
 LOCK = ROOT / ".go-queue.lock"
-PATH_RE = re.compile(r"docs/worker-task-[a-z0-9-]{1,50}\.md")
+PATH_RE = re.compile(r"(?:docs/worker-task-[a-z0-9-]{1,50}\.md|test/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.test\.mjs)")
 TASK_RE = re.compile(r"^GO_WORKER_TASK_JSON:(\{[^\n]{1,2400}\})$", re.MULTILINE)
 
 
@@ -242,8 +242,14 @@ def perform(task, state, fetch=github_read, runner=child_run):
     try:
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
         target = CHECKOUT / task["path"]
-        if target.exists() or target.is_symlink() or not target.parent.is_dir():
-            raise QueueError("Task must create a new documentation file")
+        test_edit = task["path"].startswith("test/")
+        if not target.parent.is_dir() or target.parent.is_symlink() or target.is_symlink():
+            raise QueueError("Unsafe task target")
+        if test_edit:
+            if not target.is_file():
+                raise QueueError("Test task must edit exactly one existing file")
+        elif target.exists():
+            raise QueueError("Documentation task must create exactly one new file")
         # Store only the editing instruction, never a credential.
         job = ROOT / "job.json"
         if job.is_symlink() or (job.exists() and not job.is_file()):
@@ -268,6 +274,11 @@ def perform(task, state, fetch=github_read, runner=child_run):
         runner([sys.executable, "/opt/worker/direct_editor.py"],
                child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"],
                          GO_WORKER_QUEUE_EDIT="1"))
+        if test_edit:
+            # Parsing only: NEVER run Gemini-generated tests while the parent
+            # holds GitHub credentials. GitHub Actions runs full test suites
+            # on the draft PR under its separate restricted CI environment.
+            runner(["node", "--check", str(target)], child_env())
         import publisher
         _head, changed = publisher.safe_files(CHECKOUT)
         if [name for name, _data in changed] != [task["path"]]:

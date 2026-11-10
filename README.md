@@ -8,6 +8,14 @@ This draft add-on contains a **local-only restricted job runner**, not a network
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.0: one approved JavaScript regression-test file per task
+
+The queue retains its GitHub-issued `[GO-WORKER]` title, owner, approval-label, single-task and persistent-ledger checks. In addition to the documentation pilot, an approved task may now name exactly one **existing, flat** `test/*.test.mjs` file in the public app repository. No `src/`, `scripts/`, `.github/`, new executable files, multiple paths or application assets are allowed.
+
+After a fresh checkout and one-file Gemini edit, the queue runs `node --check` on that exact file **without any Gemini or GitHub credentials**. It intentionally does **not execute** generated JavaScript inside Home Assistant; potentially adversarial test code must not share the parent's process privilege or secret access. Only a draft PR is published; GitHub Actions then performs the complete JavaScript, Python, browser and WebKit suites, with human review/merge required. Failing syntax, changed-file scope or remote-head checks stop and preserve a needs-review record, with no automated retry.
+
+Rollout: review all worker security/CI checks, install, manually run one approved synthetic test-only task and inspect its draft PR, ensure main is unchanged and the ledger stops repeats, then activate `queue_loop` only if the live test passes. Emergency pause remains Home Assistant Idle plus all flags disabled.
+
 ## v0.4.3: exhaustive bounded pilot PR audit
 
 Before allowing a single reviewed retry of #462, inspect **all** pages of up to 1,000 recent app pull requests. A repository with 100+ PRs no longer fails merely because the first page is full; recovery still fails closed on an incomplete/malformed history or any previously published pilot PR. This remains a one-off opt-in operation, not an automatic retry. Queue execution/edit/publish defaults stay disabled.
