@@ -1,12 +1,20 @@
 # GO Field Notes — isolated Aider worker (prototype)
 
-**Experimental. Installed in Home Assistant; GitHub publishing is not implemented.**
+**Experimental. Installed in Home Assistant. Verified direct Gemini edits and GitHub draft-PR publishing; no automatic merge or deployment.**
 
-This draft add-on contains a **local-only restricted job runner**, not a network service or autonomous issue/PR agent.
+This add-on runs an **isolated, approved GitHub issue queue** when explicitly enabled. No inbound network service or unconstrained shell agent is exposed.
 
 ## GitHub token field (v0.2.1)
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
+
+## v0.4.4: reboot-safe opt-in queue startup
+
+The approved GitHub issue #462 was processed end to end and produced draft PR #464, which was inspected and **closed without merging**. The live v0.4.3 queue loop successfully started and polled, reporting no outstanding approved tasks.
+
+The add-on now declares `boot: auto`, so Home Assistant can start the add-on again after an HAOS reboot. **This does not turn on editing or publishing by itself**: the default job is `idle` with all three opt-in flags false. Existing operator-selected `queue_loop` settings remain the only way to enable unattended task processing. To pause: change Job to Idle, turn off Enable Queue, Enable Edits and Enable Publishing, then restart the add-on. Never merge worker drafts automatically.
+
+The configuration and first queue start have been verified; an actual HAOS reboot and subsequent restart recovery must still be tested separately without disrupting the user's other Home Assistant services.
 
 ## v0.4.3: exhaustive bounded pilot PR audit
 
