@@ -26,6 +26,18 @@ jobs:
         run: docker build --pull -t go-aider-worker:prototype addon/
       - name: Smoke test container without credentials
         run: |
-          docker run --rm --entrypoint python go-aider-worker:prototype -c "import os, pathlib, ast, shutil; assert os.getuid() == 10001; assert shutil.which('aider'); [ast.parse(p.read_text()) for p in pathlib.Path('/opt/worker').glob('*.py')]"
+          docker run --rm --user 10001 --entrypoint python go-aider-worker:prototype -c "import os, pathlib, ast, shutil; assert os.getuid() == 10001; assert shutil.which('aider'); [ast.parse(p.read_text()) for p in pathlib.Path('/opt/worker').glob('*.py')]"
           docker run --rm --entrypoint python go-aider-worker:prototype /opt/worker/submit_job.py --help
-          docker run --rm --entrypoint python go-aider-worker:prototype /opt/worker/preflight.py
+          docker run --rm --user 10001 --entrypoint python go-aider-worker:prototype /opt/worker/preflight.py
+      - name: Smoke test protected options and idle startup
+        run: |
+          mkdir -p .ci-runtime
+          printf '%s\n' '{"job_action":"idle","job_prompt":"","enable_edits":false,"gemini_api_key":""}' > .ci-runtime/options.json
+          set +e
+          timeout 8s docker run --rm --mount "type=bind,source=$PWD/.ci-runtime,target=/data" go-aider-worker:prototype > .ci-runtime/output.log 2>&1
+          status=$?
+          set -e
+          cat .ci-runtime/output.log
+          test "$status" -eq 124
+          grep -q 'GO Aider Worker idle' .ci-runtime/output.log
+          rm -rf .ci-runtime
