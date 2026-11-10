@@ -364,4 +364,75 @@ class WorkerQueueTests(unittest.TestCase):
                 q.recover_pilot(ledger, fetch=fetch, pilot_issue=999)
             self.assertEqual(len(calls), 2)
 
+
+    def test_acknowledge_exact_merged_code_pilot_without_repeating_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({
+                "462": {"state": "submitted", "pr": 464, "attempts": 2},
+                "465": {"state": "needs-review", "attempts": 2}}, ledger)
+            record = issue(number=465, path="test/attendance-classification.test.mjs")
+            record["state"] = "closed"
+            pr = {
+                "number": 467, "state": "closed", "merged": True,
+                "merged_at": "2026-11-10T23:45:10Z",
+                "merged_by": {"login": "Wood468"},
+                "title": "Worker: issue #465 draft changes",
+                "body": "Source task: #465\\n\\nDraft for review.",
+                "base": {"ref": "main"}, "head": {"ref": "worker/review-e4b57f753688"},
+                "merge_commit_sha": "56555656391fc04bb955d01ee9c5c99029f7faeb"
+            }
+            reads = []
+            def fetch(url):
+                reads.append(url)
+                if url.endswith("/issues/465"):
+                    return record
+                if url.endswith("/pulls/467"):
+                    return pr
+                self.fail("Unapproved API request")
+            self.assertTrue(q.acknowledge_merged_code_pilot(ledger, fetch))
+            state = q.read_ledger(ledger)
+            self.assertEqual(state["465"], {"state": "submitted", "pr": 467, "attempts": 2})
+            self.assertEqual(state["462"]["pr"], 464)
+            self.assertEqual(len(reads), 2)
+            self.assertFalse(q.approved_for_dispatch(q.parse_task(issue(
+                number=465, path="test/attendance-classification.test.mjs")), state))
+            with self.assertRaises(q.QueueError):
+                q.acknowledge_merged_code_pilot(ledger, fetch)
+
+    def test_acknowledge_rejects_unverified_pr_or_issue_without_changing_ledger(self):
+        for change in (
+            ("pr", {"merged": False}),
+            ("pr", {"number": 466}),
+            ("pr", {"body": "unrelated task"}),
+            ("pr", {"merged_by": {"login": "someone-else"}}),
+            ("pr", {"head": {"ref": "untrusted-branch"}}),
+            ("issue", {"user": {"login": "someone-else"}}),
+            ("issue", {"state": "open"}),
+            ("issue", {"body": "Wrong or missing task marker"}),
+        ):
+            with self.subTest(change=change):
+                with tempfile.TemporaryDirectory() as folder:
+                    ledger = Path(folder) / "ledger.json"
+                    q.save_ledger({"465": {"state": "needs-review", "attempts": 2}}, ledger)
+                    record = issue(number=465, path="test/attendance-classification.test.mjs")
+                    record["state"] = "closed"
+                    proposal = {
+                        "number": 467, "state": "closed", "merged": True,
+                        "merged_at": "2026-11-10T23:45:10Z",
+                        "merged_by": {"login": "Wood468"},
+                        "title": "Worker: issue #465 draft changes",
+                        "body": "Source task: #465",
+                        "base": {"ref": "main"},
+                        "head": {"ref": "worker/review-e4b57f753688"},
+                        "merge_commit_sha": "56555656391fc04bb955d01ee9c5c99029f7faeb"
+                    }
+                    (proposal if change[0] == "pr" else record).update(change[1])
+                    def fetch(url):
+                        return record if url.endswith("/issues/465") else proposal
+                    with self.assertRaises(q.QueueError):
+                        q.acknowledge_merged_code_pilot(ledger, fetch)
+                    self.assertEqual(q.read_ledger(ledger)["465"]["state"], "needs-review")
+
+
 if __name__=="__main__":unittest.main()
