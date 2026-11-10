@@ -49,6 +49,16 @@ class DraftPublisher(unittest.TestCase):
         with self.assertRaises(publisher.PublishError):
             publisher.safe_files(self.root)
 
+    def test_rejects_embedded_key_markers(self):
+        (self.root / "README.md").write_text("do not publish: github_pat_dummy")
+        with self.assertRaises(publisher.PublishError):
+            publisher.safe_files(self.root)
+
+    def test_rejects_smoke_test_file(self):
+        (self.root / "WORKER_SMOKE_TEST.txt").write_text("temporary")
+        with self.assertRaises(publisher.PublishError):
+            publisher.safe_files(self.root)
+
     def test_rejects_workflow_edits(self):
         folder = self.root / ".github" / "workflows"
         folder.mkdir(parents=True)
