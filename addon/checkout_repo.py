@@ -76,6 +76,15 @@ def validate_tree(raw):
     return True
 
 
+def finalize_checkout(destination, env):
+    tree = run_git(["git", "ls-tree", "-r", "-z", "HEAD"], env,
+                   cwd=destination, capture=True)
+    validate_tree(tree)
+    # Checkout writes files only: no submodule recursion or running project tests.
+    run_git(["git", "checkout", "--force", "HEAD", "--", "."], env,
+            cwd=destination)
+
+
 def checkout(repository, allowlist, destination=DEST):
     url = validate_repository(repository, allowlist)
     destination = Path(destination)
@@ -89,12 +98,7 @@ def checkout(repository, allowlist, destination=DEST):
          "--single-branch", "--no-checkout", "--", url, str(destination)],
         env,
     )
-    tree = run_git(["git", "ls-tree", "-r", "-z", "HEAD"], env,
-                   cwd=destination, capture=True)
-    validate_tree(tree)
-    # Checkout writes files only: no submodule recursion or running project tests.
-    run_git(["git", "checkout", "--force", "HEAD", "--", "."], env,
-            cwd=destination)
+    finalize_checkout(destination, env)
     return destination
 
 
