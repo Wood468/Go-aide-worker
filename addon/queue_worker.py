@@ -18,6 +18,7 @@ ROOT = Path("/data/workspace")
 CHECKOUT = ROOT / "source"
 LEDGER = ROOT / "go-queue-ledger.json"
 LOCK = ROOT / ".go-queue.lock"
+JOB_FILE = Path("/data/job.json")
 PATH_RE = re.compile(r"docs/worker-task-[a-z0-9-]{1,50}\.md")
 TASK_RE = re.compile(r"^GO_WORKER_TASK_JSON:(\{[^\n]{1,2400}\})$", re.MULTILINE)
 
@@ -161,25 +162,28 @@ def perform(task, state, fetch=github_read, runner=child_run):
     state[key] = {"state": "started"}
     save_ledger(state)
     try:
+        print("Queue phase: refresh", flush=True)
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
         target = CHECKOUT / task["path"]
         if target.exists() or target.is_symlink() or not target.parent.is_dir():
             raise QueueError("Task must create a new documentation file")
         # Store only the editing instruction, never a credential.
-        job = ROOT / "job.json"
+        job = JOB_FILE
         if not job.is_file() or job.is_symlink():
             raise QueueError("Invalid worker job file")
-        temp = ROOT / ".queue-job-next.json"
+        temp = job.with_name(".queue-job-next.json")
         if temp.exists() or temp.is_symlink():
             raise QueueError("Queue job file collision")
         temp.write_text(json.dumps({"action": "direct_edit", "prompt": task["instruction"]}))
         os.replace(temp, job)
+        print("Queue phase: edit", flush=True)
         runner([sys.executable, "/opt/worker/direct_editor.py"],
                child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"]))
         import publisher
         _head, changed = publisher.safe_files(CHECKOUT)
         if [name for name, _data in changed] != [task["path"]]:
             raise QueueError("Changes outside approved file detected")
+        print("Queue phase: publish", flush=True)
         out = runner([sys.executable, "/opt/worker/publisher.py"],
                      child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true", WORKER_ISSUE_NUMBER=key))
         matched = re.search(rb"Created draft PR #(\d+)", out)
@@ -191,6 +195,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
     except Exception:
+        print("Queue halted: inspect issue #" + key + " before any retry", flush=True)
         state[key] = {"state": "needs-review"}
         save_ledger(state)
         raise
@@ -213,16 +218,35 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
     return 0
 
 
+def reset_reviewed_issue(issue_id):
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", issue_id):
+        raise QueueError("Invalid recovery issue ID")
+    state = read_ledger()
+    entry = state.get(issue_id)
+    if not isinstance(entry, dict) or entry.get("state") != "needs-review":
+        raise QueueError("Only a reviewed failed task can be reset")
+    # This action must be invoked by the operator after checking GitHub.
+    del state[issue_id]
+    save_ledger(state)
+    print("Reviewed failed task #" + issue_id + " is eligible again", flush=True)
+
+
 def main():
-    mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop"):
+    mode = sys.argv[1] if len(sys.argv) >= 2 else None
+    if mode not in ("scan", "once", "loop", "reset"):
         raise QueueError("Invalid queue mode")
+    if mode == "reset" and len(sys.argv) != 3:
+        raise QueueError("Recovery requires issue number")
+    if mode != "reset" and len(sys.argv) != 2:
+        raise QueueError("Invalid queue arguments")
     with LOCK.open("a+b") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise QueueError("Another queue worker holds the lock") from None
-        if mode == "loop":
+        if mode == "reset":
+            reset_reviewed_issue(sys.argv[2])
+        elif mode == "loop":
             print("Approved queue active, one draft PR at a time", flush=True)
             while True:
                 try:
