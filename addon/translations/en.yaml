@@ -11,3 +11,6 @@ configuration:
   gemini_api_key:
     name: Google AI Studio API key
     description: "Keep this key here in Home Assistant, not in GitHub or ChatGPT. Only an explicitly enabled Edit job passes it to Aider."
+  github_token:
+    name: GitHub fine-grained token
+    description: "Restricted to Wood468/crispy-barnacle. Stored here, not sent to Gemini or tests. Publishing stays disabled until separately verified."

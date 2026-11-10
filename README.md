@@ -1,8 +1,12 @@
 # GO Field Notes — isolated Aider worker (prototype)
 
-**Not installation-ready. Do not install on Home Assistant or supply real credentials yet.**
+**Experimental. Installed in Home Assistant; GitHub publishing is not implemented.**
 
 This draft add-on contains a **local-only restricted job runner**, not a network service or autonomous issue/PR agent.
+
+## GitHub token field (v0.2.1)
+
+Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. No push, branch publication or PR creation has been enabled. Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
 ## Implemented safeguards
 - Container starts as unprivileged user `coder` (UID 10001).
