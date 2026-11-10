@@ -53,6 +53,7 @@ class OptionsBridge(unittest.TestCase):
         self.assertEqual(launcher.read_options(self.path)[0], "idle")
         with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
               patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
               patch.object(launcher.os, "setgid"),
@@ -96,6 +97,7 @@ class OptionsBridge(unittest.TestCase):
                    gemini_api_key="dummy-gemini-key", github_token="dummy-github-token")
         with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
               patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
               patch.object(launcher.os, "setgid"),
@@ -112,6 +114,7 @@ class OptionsBridge(unittest.TestCase):
                    gemini_api_key="dummy-gemini-key", github_token="dummy-github-token")
         with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
               patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
               patch.object(launcher.os, "setgid"),
@@ -124,6 +127,19 @@ class OptionsBridge(unittest.TestCase):
             env = launcher.os.execve.call_args.args[2]
             self.assertNotIn("GEMINI_API_KEY", env)
             self.assertEqual(env["GITHUB_TOKEN"], "dummy-github-token")
+
+    def test_options_file_is_root_private(self):
+        self.write(job_action="idle", github_token="dummy-token")
+        with patch.object(launcher.os, "chown"):
+            launcher.protect_options(self.path)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+
+    def test_rejects_options_symlink_for_privacy(self):
+        original = self.write(job_action="idle", github_token="dummy")
+        link = original.with_name("link.json")
+        link.symlink_to(original)
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.protect_options(link)
 
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
@@ -157,6 +173,7 @@ class OptionsBridge(unittest.TestCase):
         self.write(job_action="idle", job_prompt="", enable_edits=False, gemini_api_key="")
         with (patch.object(launcher, "read_options", return_value=("idle", "", False, "", False, "")),
               patch.object(launcher, "prepare_directory"),
+              patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
               patch.object(launcher.os, "setgroups"),
               patch.object(launcher.os, "setgid"),
