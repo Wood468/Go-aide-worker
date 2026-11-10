@@ -221,13 +221,13 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 def reset_reviewed_issue(issue_id):
     if not re.fullmatch(r"[1-9][0-9]{0,9}", issue_id):
         raise QueueError("Invalid recovery issue ID")
-    state = read_ledger()
+    state = read_ledger(LEDGER)
     entry = state.get(issue_id)
     if not isinstance(entry, dict) or entry.get("state") != "needs-review":
         raise QueueError("Only a reviewed failed task can be reset")
     # This action must be invoked by the operator after checking GitHub.
     del state[issue_id]
-    save_ledger(state)
+    save_ledger(state, LEDGER)
     print("Reviewed failed task #" + issue_id + " is eligible again", flush=True)
 
 
