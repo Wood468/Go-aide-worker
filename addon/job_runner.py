@@ -16,7 +16,7 @@ MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
 ALLOWED_ACTIONS = {"inspect", "test", "edit", "prepare", "verify", "publish", "probe"}
-MODEL = "gemini/gemini-2.5-flash"
+MODEL = "gemini/gemini-3.5-flash-lite"
 
 
 class JobError(Exception):
