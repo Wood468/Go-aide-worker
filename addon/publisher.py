@@ -148,7 +148,7 @@ def publish(workspace, token, request=api, branch_id=None, task_id=None):
         "head": branch, "base": "main", "draft": True,
         "body": ("Automated isolated worker proposal. Requires human review and CI. "
                  "No automatic merge or deployment." +
-                 ("\\n\\nGO-WORKER-TASK:" + task_id if task_id else ""))})
+                 ("\n\nGO-WORKER-TASK:" + task_id if task_id else ""))})
     if not pr.get("draft") or not isinstance(pr.get("number"), int):
         raise PublishError("Draft PR confirmation missing")
     return pr["number"]
