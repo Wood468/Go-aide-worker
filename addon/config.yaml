@@ -1,5 +1,5 @@
 name: "GO Aider Worker (Prototype)"
-version: "0.4.3"
+version: "0.5.0"
 slug: "go_aider_worker"
 description: "Isolated, one-job-at-a-time Gemini/Aider worker; experimental"
 url: "https://github.com/Wood468/Go-aide-worker"
