@@ -40,6 +40,16 @@ class RefreshCheckoutTests(unittest.TestCase):
             worker.refresh(self.root,fail)
         self.assertTrue((self.old/"old-file.txt").is_file())
 
+    def test_partial_clone_failure_removes_temporary_checkout(self):
+        def partial_failure(repo,allowed,destination):
+            destination.mkdir()
+            (destination/"partial").write_text("interrupted")
+            raise worker.checkout_repo.CheckoutError("clone interrupted")
+        with self.assertRaises(worker.checkout_repo.CheckoutError):
+            worker.refresh(self.root,partial_failure)
+        self.assertTrue((self.old/"old-file.txt").exists())
+        self.assertFalse((self.root/".source-next").exists())
+
     def test_refuses_symlink_destination(self):
         (self.root/".source-next").symlink_to(self.old, target_is_directory=True)
         with self.assertRaises(worker.RefreshError):
