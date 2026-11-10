@@ -67,8 +67,8 @@ class RestrictedJobs(unittest.TestCase):
             process = MagicMock()
             process.pid = 4242
             process.wait.side_effect = [TimeoutExpired("git", 300), 0]
-            with patch.object(runner.subprocess, "Popen", return_value=process), \\
-                 patch.object(runner.os, "killpg") as killpg:
+            with (patch.object(runner.subprocess, "Popen", return_value=process),
+                  patch.object(runner.os, "killpg") as killpg):
                 with self.assertRaises(runner.JobError):
                     runner.run(job, self.workspace)
                 killpg.assert_called_once_with(4242, runner.signal.SIGTERM)
