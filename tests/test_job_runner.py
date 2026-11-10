@@ -165,6 +165,61 @@ class RestrictedJobs(unittest.TestCase):
                 self.assertEqual(env["GITHUB_TOKEN"], "dummy-github")
                 self.assertNotIn("GEMINI_API_KEY", env)
 
+    def test_safe_aider_diagnostic_never_contains_provider_text(self):
+        output = b"Sensitive model data: dummy-private-key; 429 resource_exhausted"
+        self.assertEqual(runner.classify_edit_output(output), "quota-or-rate-limit")
+        self.assertNotIn("dummy-private-key", runner.classify_edit_output(output))
+
+    def test_successful_aider_noop_is_failure(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("edit", "create a harmless text file")))
+            proc = MagicMock()
+            proc.wait.return_value = 0
+            with (patch.dict(os.environ, {"ENABLE_EDITS": "true",
+                    "GEMINI_API_KEY": "dummy-gemini"}, clear=True),
+                  patch.object(runner.subprocess, "Popen", return_value=proc) as popen,
+                  patch.object(runner, "count_changes", return_value=0)):
+                self.assertEqual(runner.run(job, self.workspace), 4)
+                self.assertNotIn("GITHUB_TOKEN", popen.call_args.kwargs["env"])
+                self.assertIsNotNone(popen.call_args.kwargs["stdout"])
+
+    def test_changed_edit_can_return_success(self):
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("edit", "create a harmless text file")))
+            proc = MagicMock()
+            proc.wait.return_value = 0
+            with (patch.dict(os.environ, {"ENABLE_EDITS": "true",
+                    "GEMINI_API_KEY": "dummy-gemini"}, clear=True),
+                  patch.object(runner.subprocess, "Popen", return_value=proc),
+                  patch.object(runner, "count_changes", return_value=1)):
+                self.assertEqual(runner.run(job, self.workspace), 0)
+
+    def test_changed_file_inspection_strips_all_tokens(self):
+        from types import SimpleNamespace
+        with (patch.dict(os.environ, {"GEMINI_API_KEY": "secret-gemini",
+                 "GITHUB_TOKEN": "secret-github"}),
+              patch.object(runner.subprocess, "run",
+                return_value=SimpleNamespace(returncode=0, stdout=b"?? file.txt\0")) as run):
+            self.assertEqual(runner.count_changes(self.workspace), 1)
+            env = run.call_args.kwargs["env"]
+            self.assertNotIn("GEMINI_API_KEY", env)
+            self.assertNotIn("GITHUB_TOKEN", env)
+
+    def test_edit_file_selection_is_explicit_and_bounded(self):
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt,src/example.py"}):
+            self.assertEqual(runner.selected_edit_files(self.workspace),
+                             ["WORKER_SMOKE_TEST.txt", "src/example.py"])
+            cmd = runner.command_for("edit", "create a useful file")
+            self.assertEqual(cmd.count("--file"), 2)
+            self.assertIn("WORKER_SMOKE_TEST.txt", cmd)
+        with patch.dict(os.environ, {"EDIT_FILES": "../../data/options.json"}):
+            with self.assertRaises(runner.JobError):
+                runner.selected_edit_files(self.workspace)
+
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])

@@ -6,6 +6,7 @@ explicitly enabled edit jobs, never written into the job file or logs.
 """
 import json
 import os
+import re
 from pathlib import Path
 import sys
 
@@ -29,6 +30,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Options must be a JSON object")
     action = raw.get("job_action", "idle")
     prompt = raw.get("job_prompt", "")
+    edit_files = raw.get("edit_files", "")
     enabled = raw.get("enable_edits", False)
     publish_enabled = raw.get("enable_publishing", False)
     api_key = raw.get("gemini_api_key", "")
@@ -37,6 +39,18 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Unsupported action")
     if not isinstance(prompt, str) or len(prompt) > 3000:
         raise ConfigurationError("Invalid prompt")
+    if not isinstance(edit_files, str) or len(edit_files) > 500:
+        raise ConfigurationError("Invalid edit file selection")
+    selected = [x.strip() for x in edit_files.split(",") if x.strip()]
+    if len(selected) > 5 or len(selected) != len(set(selected)):
+        raise ConfigurationError("Too many or duplicate edit files")
+    for path in selected:
+        if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,180}", path)
+                or any(x.startswith(".") or x in {"", ".", ".."} for x in path.split("/"))
+                or any("token" in x.lower() or "secret" in x.lower() for x in path.split("/"))):
+            raise ConfigurationError("Unsafe edit file path")
+    if action != "edit" and selected:
+        raise ConfigurationError("File selection is only available for edit jobs")
     if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
@@ -47,7 +61,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
     if action in {"idle", "prepare", "inspect", "test", "verify", "publish"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
-    return action, prompt, enabled, api_key, publish_enabled, github_token
+    return action, prompt, enabled, api_key, publish_enabled, github_token, ",".join(selected)
 
 
 def protect_options(path=OPTIONS):
@@ -100,7 +114,7 @@ def stage_job(action, prompt, path=JOB):
 def main():
     if os.geteuid() != 0:
         raise ConfigurationError("Bootstrap requires root solely for UID drop and storage setup")
-    action, prompt, enabled, api_key, publish_enabled, github_token = read_options()
+    action, prompt, enabled, api_key, publish_enabled, github_token, edit_files = read_options()
     protect_options()
     prepare_directory()
     if action != "idle":
@@ -119,6 +133,7 @@ def main():
     if action == "edit":
         environment["ENABLE_EDITS"] = "true"
         environment["GEMINI_API_KEY"] = api_key
+        environment["EDIT_FILES"] = edit_files
     if action == "publish":
         environment["ENABLE_PUBLISHING"] = "true"
         environment["GITHUB_TOKEN"] = github_token

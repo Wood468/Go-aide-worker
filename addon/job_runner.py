@@ -3,9 +3,11 @@
 import json
 import signal
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 WORKSPACE = Path("/data/workspace/source")
 JOB_FILE = Path("/data/job.json")
@@ -18,6 +20,31 @@ MODEL = "gemini/gemini-2.5-flash"
 
 class JobError(Exception):
     pass
+
+
+def selected_edit_files(workspace):
+    raw = os.environ.get("EDIT_FILES", "")
+    if len(raw) > 500:
+        raise JobError("Invalid selected files")
+    paths = [x.strip() for x in raw.split(",") if x.strip()]
+    if len(paths) > 5 or len(set(paths)) != len(paths):
+        raise JobError("Invalid selected files")
+    for relative in paths:
+        if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]{0,180}", relative)
+                or any(part.startswith(".") or part in {"", ".", ".."}
+                       for part in relative.split("/"))
+                or any("token" in part.lower() or "secret" in part.lower()
+                       for part in relative.split("/"))):
+            raise JobError("Unsafe selected edit path")
+        current = workspace
+        for part in relative.split("/")[:-1]:
+            current = current / part
+            if current.is_symlink():
+                raise JobError("Symlinked edit parent not allowed")
+        target = workspace / relative
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise JobError("Unsafe edit target")
+    return paths
 
 
 def validate_job(raw, workspace=WORKSPACE):
@@ -48,6 +75,8 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Workspace must be a real directory")
     if (workspace / ".git").is_symlink() or not (workspace / ".git").is_dir():
         raise JobError("Workspace must contain a checked-out Git repository")
+    if action == "edit":
+        selected_edit_files(workspace)
     return action, prompt
 
 
@@ -60,11 +89,46 @@ def command_for(action, prompt):
         return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
     if action == "publish":
         return [sys.executable, "/opt/worker/publisher.py"]
+    files = selected_edit_files(WORKSPACE)
+    file_args = [arg for file in files for arg in ("--file", file)]
     return [
         "aider", "--model", MODEL, "--yes", "--no-auto-commits",
-        "--no-gitignore", "--no-show-model-warnings", "--message", prompt,
+        "--no-gitignore", "--no-show-model-warnings",
+        *file_args, "--message", prompt,
     ]
 
+
+def classify_edit_output(raw):
+    """Classify model output without disclosing it to Home Assistant logs."""
+    raw = raw[:200_000].lower()
+    categories = (
+        ((b"rate limit", b"429", b"quota exceeded", b"resource_exhausted"), "quota-or-rate-limit"),
+        ((b"401", b"invalid api key", b"authentication failed", b"api key not valid"), "authentication"),
+        ((b"403", b"permission denied", b"permission_denied"), "permission"),
+        ((b"model not found", b"unknown model", b"404"), "model-unavailable"),
+        ((b"connection error", b"connection failed", b"timeout", b"network unreachable"), "network"),
+        ((b"no files", b"no changes", b"no edits", b"did not make"), "no-edit-response"),
+    )
+    for needles, label in categories:
+        if any(needle in raw for needle in needles):
+            return label
+    return "no-recognised-provider-error"
+
+
+def count_changes(workspace):
+    """Return only a count of dirty paths, never filenames or contents."""
+    environment = {"PATH": "/usr/bin:/bin", "HOME": "/home/coder",
+                   "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+                   "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_COUNT": "1",
+                   "GIT_CONFIG_KEY_0": "core.hooksPath",
+                   "GIT_CONFIG_VALUE_0": "/dev/null"}
+    result = subprocess.run(
+        ["git", "status", "--porcelain", "-z", "--untracked-files=all"],
+        cwd=workspace, env=environment, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20, check=False)
+    if result.returncode:
+        raise JobError("Cannot inspect changed files")
+    return sum(1 for part in result.stdout.split(b"\0") if part)
 
 def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if job_file.is_symlink() or not job_file.is_file() or job_file.stat().st_size > MAX_JOB_BYTES:
@@ -74,9 +138,14 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if action == "verify":
         expected = b"GO Aider Gemini smoke test succeeded\n"
         target = workspace / "WORKER_SMOKE_TEST.txt"
-        verified = target.is_file() and not target.is_symlink() and target.read_bytes().rstrip(b"\r\n") == expected.rstrip(b"\n")
-        print("Gemini smoke file verified" if verified else "Gemini smoke file missing or incorrect", flush=True)
-        return 0 if verified else 3
+        if target.is_symlink() or not target.is_file():
+            print("Gemini smoke file absent", flush=True)
+            return 3
+        if target.read_bytes().rstrip(b"\r\n") != expected.rstrip(b"\n"):
+            print("Gemini smoke file exists but content differs", flush=True)
+            return 3
+        print("Gemini smoke file verified", flush=True)
+        return 0
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
@@ -90,23 +159,33 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     if action == "publish":
         env.pop("GEMINI_API_KEY", None)
         env.pop("ENABLE_EDITS", None)
-    process = subprocess.Popen(
-        cmd, cwd=workspace.parent if action == "prepare" else workspace,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
-        env=env,
-    )
-    try:
-        return_code = process.wait(timeout=TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        # Kill the whole process group, including children that ignore SIGTERM.
+    # Raw model/API output is held in an unlinked temporary file, never HA logs.
+    with tempfile.TemporaryFile(mode="w+b") as private_output:
+        process = subprocess.Popen(
+            cmd, cwd=workspace.parent if action == "prepare" else workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=private_output if action == "edit" else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if action == "edit" else subprocess.DEVNULL,
+            start_new_session=True,
+            env=env,
+        )
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass  # The whole group already exited.
-        process.wait()
-        raise JobError("Job timed out") from exc
+            return_code = process.wait(timeout=TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise JobError("Job timed out") from exc
+        if action == "edit":
+            private_output.seek(0)
+            category = classify_edit_output(private_output.read(200_000))
+            changed = count_changes(workspace)
+            print(f"Aider diagnostic: {category}; changed paths: {changed}", flush=True)
+            if return_code == 0 and changed == 0:
+                print("Edit did not produce repository changes", flush=True)
+                return 4
     print(f"Job finished with exit code {return_code}", flush=True)
     return return_code
 
