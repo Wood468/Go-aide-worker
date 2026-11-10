@@ -337,4 +337,31 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertTrue(q.recover_pilot(ledger, fetch=fetch))
             self.assertEqual(pages, [1])
 
+
+    def test_code_pilot_retry_requires_exact_approved_issue_and_one_attempt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462": {"state": "submitted", "pr": 464, "attempts": 2},
+                           "465": {"state": "needs-review", "attempts": 1}}, ledger)
+            calls = []
+            def fetch(url):
+                calls.append(url)
+                if url.endswith("/issues/465"):
+                    return issue(number=465,
+                        path="test/attendance-classification.test.mjs")
+                if "/pulls?" in url:
+                    return []
+                self.fail("Unexpected remote query")
+            self.assertTrue(q.recover_pilot(ledger, fetch=fetch, pilot_issue=465))
+            state = q.read_ledger(ledger)
+            self.assertEqual(state["465"], {"state": "approved-pilot-retry", "attempts": 1})
+            self.assertEqual(state["462"]["state"], "submitted")
+            task = q.parse_task(issue(number=465, path="test/attendance-classification.test.mjs"))
+            self.assertTrue(q.approved_for_dispatch(task, state))
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=fetch, pilot_issue=465)
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=fetch, pilot_issue=999)
+            self.assertEqual(len(calls), 2)
+
 if __name__=="__main__":unittest.main()
