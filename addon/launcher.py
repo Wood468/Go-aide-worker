@@ -14,7 +14,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "inspect", "test", "edit", "verify", "publish", "probe"}
+ACTION_SET = {"idle", "prepare", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -49,7 +49,7 @@ def read_options(path=OPTIONS):
                 or any(x.startswith(".") or x in {"", ".", ".."} for x in path.split("/"))
                 or any("token" in x.lower() or "secret" in x.lower() for x in path.split("/"))):
             raise ConfigurationError("Unsafe edit file path")
-    if action != "edit" and selected:
+    if action not in {"edit", "direct_edit"} and selected:
         raise ConfigurationError("File selection is only available for edit jobs")
     if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool):
         raise ConfigurationError("Enable flags must be boolean")
@@ -57,7 +57,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Invalid key configuration")
     if action == "probe" and not api_key.strip():
         raise ConfigurationError("Probe requires Gemini key")
-    if action == "edit" and (not enabled or not prompt.strip() or not api_key.strip()):
+    if action in {"edit", "direct_edit"} and (not enabled or not prompt.strip() or not api_key.strip()):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
     if action == "publish" and (not publish_enabled or not github_token.strip()):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
@@ -132,7 +132,7 @@ def main():
     if action == "prepare":
         environment["WORKER_PUBLIC_REPOSITORY"] = REPOSITORY
         environment["ALLOWED_PUBLIC_REPOSITORIES"] = REPOSITORY
-    if action == "edit":
+    if action in {"edit", "direct_edit"}:
         environment["ENABLE_EDITS"] = "true"
         environment["GEMINI_API_KEY"] = api_key
         environment["EDIT_FILES"] = edit_files
