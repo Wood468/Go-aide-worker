@@ -239,5 +239,21 @@ class OptionsBridge(unittest.TestCase):
             submit.assert_not_called()
 
 
+
+    def test_queue_status_and_pilot_recovery_require_no_model_keys(self):
+        self.write(job_action="queue_status", job_prompt="", edit_files="",
+                   enable_edits=False, enable_publishing=False,
+                   enable_queue=False, gemini_api_key="", github_token="")
+        self.assertEqual(launcher.read_options(self.path)[0], "queue_status")
+        self.write(job_action="queue_recover_pilot", job_prompt="", edit_files="",
+                   enable_edits=False, enable_publishing=False,
+                   enable_queue=False, gemini_api_key="", github_token="")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+        self.write(job_action="queue_recover_pilot", job_prompt="", edit_files="",
+                   enable_edits=False, enable_publishing=False,
+                   enable_queue=True, gemini_api_key="", github_token="")
+        self.assertEqual(launcher.read_options(self.path)[0], "queue_recover_pilot")
+
 if __name__ == "__main__":
     unittest.main()
