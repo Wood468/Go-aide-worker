@@ -110,10 +110,23 @@ def edit(workspace, selected, prompt, key, generator=generate):
     return True
 
 
+# Queue edits are staged under the unprivileged, persistent workspace.
+# Manual Home Assistant edits continue to read the root-staged /data/job.json.
+# This fixed alternative is available only to the explicit queue editor child.
+QUEUE_JOB = Path("/data/workspace/job.json")
+
+
+def selected_job_file():
+    candidate = QUEUE_JOB if os.environ.get("GO_WORKER_QUEUE_EDIT") == "1" else job_runner.JOB_FILE
+    if candidate.is_symlink() or not candidate.is_file() or candidate.stat().st_size > 8192:
+        raise DirectEditError("Missing, unsafe or oversized edit job")
+    return candidate
+
+
 def main():
     try:
         selection = job_runner.selected_edit_files(job_runner.WORKSPACE)
-        with job_runner.JOB_FILE.open(encoding="utf-8") as inp:
+        with selected_job_file().open(encoding="utf-8") as inp:
             job = json.load(inp)
         if not isinstance(job, dict) or job.get("action") != "direct_edit":
             raise DirectEditError("Unexpected edit job")
