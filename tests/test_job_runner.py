@@ -97,6 +97,43 @@ class RestrictedJobs(unittest.TestCase):
             with self.assertRaises(runner.JobError):
                 runner.validate_job(self.job("test"), self.workspace)
 
+    def test_prepare_requires_preconfigured_allowlist(self):
+        destination = self.workspace / "source"
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(runner.JobError):
+                runner.validate_job(self.job("prepare"), destination)
+
+    def test_prepare_runs_public_checkout_with_scrubbed_environment(self):
+        import json
+        destination = self.workspace / "source"
+        with tempfile.TemporaryDirectory() as tmp:
+            job_file = Path(tmp) / "job.json"
+            job_file.write_text(json.dumps(self.job("prepare")))
+            process = MagicMock()
+            process.wait.return_value = 0
+            with (patch.dict(os.environ, {
+                    "WORKER_PUBLIC_REPOSITORY": "owner/repo",
+                    "ALLOWED_PUBLIC_REPOSITORIES": "owner/repo",
+                    "GEMINI_API_KEY": "not-for-checkout",
+                  }),
+                  patch.object(runner.subprocess, "Popen", return_value=process) as popen):
+                self.assertEqual(runner.run(job_file, destination), 0)
+            args = popen.call_args.args[0]
+            env = popen.call_args.kwargs["env"]
+            self.assertEqual(args[-1], "owner/repo")
+            self.assertEqual(env["ALLOWED_PUBLIC_REPOSITORIES"], "owner/repo")
+            self.assertNotIn("GEMINI_API_KEY", env)
+            self.assertEqual(popen.call_args.kwargs["cwd"], self.workspace)
+
+    def test_prepare_rejects_existing_source_tree(self):
+        destination = self.workspace / "source"
+        destination.mkdir()
+        with patch.dict(os.environ, {
+                "WORKER_PUBLIC_REPOSITORY": "owner/repo",
+                "ALLOWED_PUBLIC_REPOSITORIES": "owner/repo"}):
+            with self.assertRaises(runner.JobError):
+                runner.validate_job(self.job("prepare"), destination)
+
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])
