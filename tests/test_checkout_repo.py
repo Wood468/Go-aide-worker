@@ -35,7 +35,7 @@ class CheckoutTests(unittest.TestCase):
     def test_fetch_validates_tree_and_checks_out_without_prompts(self):
         with tempfile.TemporaryDirectory() as tmp:
             destination = Path(tmp) / "workspace"
-            tree = b"100644 blob abcdef\\tREADME.md\\0"
+            tree = b"100644 blob abcdef\tREADME.md\0"
             result = subprocess.CompletedProcess([], 0, stdout=tree)
             with patch.object(module.subprocess, "run", return_value=result) as git:
                 module.checkout("owner/repo", "owner/repo", destination)
@@ -52,11 +52,11 @@ class CheckoutTests(unittest.TestCase):
     def test_rejects_symlinks_and_submodules(self):
         for mode in (b"120000", b"160000"):
             with self.subTest(mode=mode), self.assertRaises(module.CheckoutError):
-                module.validate_tree(mode + b" blob abcdef\\tunsafe\\0")
+                module.validate_tree(mode + b" blob abcdef\tunsafe\0")
 
     def test_rejects_reserved_git_paths(self):
         with self.assertRaises(module.CheckoutError):
-            module.validate_tree(b"100644 blob abcdef\\tdir/.git/config\\0")
+            module.validate_tree(b"100644 blob abcdef\tdir/.git/config\0")
 
     def test_rejects_oversized_tree(self):
         with self.assertRaises(module.CheckoutError):
