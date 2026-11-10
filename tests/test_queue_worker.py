@@ -15,7 +15,9 @@ q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 def issue(number=10, author="Wood468", labels=None, path="docs/worker-task-qa-note.md"):
     payload={"path":path,"instruction":"Create a short source-backed QA checklist for this single review-only note."}
-    return {"number":number,"state":"open","title":"[GO-WORKER] Prepare test QA note",
+    return {"number":number,"state":"open",
+            "created_at":"2026-11-10T22:01:34Z",
+            "title":"[GO-WORKER] Prepare test QA note",
             "user":{"login":author},
             "labels":[{"name":x} for x in (labels or ["go-worker-approved"])],
             "body":"Reviewed bounded task.\nGO_WORKER_TASK_JSON:"+json.dumps(payload)+"\n"}
@@ -167,8 +169,9 @@ class WorkerQueueTests(unittest.TestCase):
 
     def test_pilot_recovery_fails_closed_on_existing_pr_or_changed_approval(self):
         for existing in ([{"title": "Worker: issue #462 draft changes",
-                           "body": ""}],
-                         [{"title": "Some PR", "body": "Source task: #462"}],
+                           "body": "", "created_at": "2026-11-10T22:05:00Z"}],
+                         [{"title": "Some PR", "body": "Source task: #462",
+                           "created_at": "2026-11-10T22:05:00Z"}],
                          [{}] * 100):
             with self.subTest(existing=existing[:1]):
                 with tempfile.TemporaryDirectory() as folder:
@@ -233,10 +236,12 @@ class WorkerQueueTests(unittest.TestCase):
                         page = int(parse_qs(urlparse(url).query)["page"][0])
                         scanned.append(page)
                         if page == 1:
-                            return [{"title": "Unrelated PR", "body": ""}] * 100
+                            return [{"title": "Unrelated PR", "body": "",
+                                     "created_at": "2026-11-10T22:08:00Z"}] * 5
                         if page == 2:
                             return ([{"title": "Worker: issue #462 draft changes",
-                                      "body": "Source task: #462"}]
+                                      "body": "Source task: #462",
+                                      "created_at": "2026-11-10T22:03:00Z"}]
                                     if include_existing else [])
                         self.fail("Recovery read unnecessary third page")
                     if include_existing:
@@ -249,5 +254,31 @@ class WorkerQueueTests(unittest.TestCase):
                         self.assertEqual(q.read_ledger(ledger)["462"]["state"],
                                          "approved-pilot-retry")
                     self.assertEqual(scanned, [1, 2])
+
+
+    def test_older_pr_cutoff_stops_after_all_newer_drafts_are_checked(self):
+        from urllib.parse import parse_qs, urlparse
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"462": {"state": "needs-review"}}, ledger)
+            pages = []
+            def fetch(url):
+                if url.endswith("/issues/462"):
+                    return issue(number=462,
+                                 path="docs/worker-task-queue-pilot.md")
+                page = int(parse_qs(urlparse(url).query)["page"][0])
+                pages.append(page)
+                self.assertEqual(page, 1)
+                return [
+                    {"title": "New unrelated", "body": "",
+                     "created_at": "2026-11-10T22:05:00Z"},
+                    {"title": "Old unrelated", "body": "",
+                     "created_at": "2026-11-10T21:59:00Z"},
+                    {"title": "Old worker draft after cutoff", 
+                     "body": "Source task: #462",
+                     "created_at": "2026-11-10T21:58:00Z"},
+                ]
+            self.assertTrue(q.recover_pilot(ledger, fetch=fetch))
+            self.assertEqual(pages, [1])
 
 if __name__=="__main__":unittest.main()
