@@ -47,6 +47,30 @@ class OptionsBridge(unittest.TestCase):
         self.write(job_action="edit", job_prompt="fix", enable_edits=True, gemini_api_key="dummy-only")
         self.assertEqual(launcher.read_options(self.path), ("edit", "fix", True, "dummy-only"))
 
+    def test_github_token_stays_out_of_worker_environment(self):
+        self.write(job_action="idle", job_prompt="", enable_edits=False,
+                   gemini_api_key="", github_token="dummy-github-secret")
+        self.assertEqual(launcher.read_options(self.path)[0], "idle")
+        with (patch.object(launcher, "read_options", return_value=launcher.read_options(self.path)),
+              patch.object(launcher, "prepare_directory"),
+              patch.object(launcher.os, "geteuid", return_value=0),
+              patch.object(launcher.os, "setgroups"),
+              patch.object(launcher.os, "setgid"),
+              patch.object(launcher.os, "setuid"),
+              patch.object(launcher.os, "execve", side_effect=SystemExit) as execution,
+              patch.object(launcher, "stage_job")):
+            with self.assertRaises(SystemExit):
+                launcher.main()
+            env = execution.call_args.args[2]
+            self.assertNotIn("GITHUB_TOKEN", env)
+            self.assertNotIn("github_token", env)
+            self.assertNotIn("dummy-github-secret", repr(env))
+
+    def test_rejects_nonstring_github_token(self):
+        self.write(job_action="idle", github_token=["not-a-token"])
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
         with self.assertRaises(launcher.ConfigurationError):
