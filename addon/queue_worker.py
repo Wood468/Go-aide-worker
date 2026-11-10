@@ -187,19 +187,40 @@ def recover_pilot(path=LEDGER, fetch=github_read):
             previous.get("state") not in {"started", "needs-review"} or
             previous.get("attempts", 1) != 1 or "pr" in previous):
         raise QueueError("Pilot recovery not eligible")
-    issue = parse_task(fetch("https://api.github.com/repos/" + REPO + "/issues/" + key))
+    source_issue = fetch("https://api.github.com/repos/" + REPO + "/issues/" + key)
+    issue = parse_task(source_issue)
     if not issue or issue["issue"] != PILOT_ISSUE or issue["path"] != PILOT_PATH:
         raise QueueError("Pilot approval changed")
-    prs = fetch("https://api.github.com/repos/" + REPO +
-                "/pulls?state=all&per_page=100")
-    if not isinstance(prs, list) or len(prs) >= 100:
-        raise QueueError("Cannot exhaustively verify recent worker PRs")
-    for pr in prs:
-        if not isinstance(pr, dict):
-            raise QueueError("Invalid PR history")
-        title, body = str(pr.get("title") or ""), str(pr.get("body") or "")
-        if ("Worker: issue #" + key) in title or ("Source task: #" + key) in body:
-            raise QueueError("Pilot may already have a published draft PR")
+    # Only PRs *created after* this approved issue could have come from it.
+    # Check newest first, in five-PR pages small enough for the worker's
+    # existing 180 KB untrusted-response limit. Do not relax that cap.
+    issued = source_issue.get("created_at") if isinstance(source_issue, dict) else None
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
+        raise QueueError("Pilot issue creation time unavailable")
+    verified_cutoff = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" + str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Invalid PR history page")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Invalid PR history")
+            created = pr.get("created_at")
+            if not isinstance(created, str) or not re.fullmatch(iso_utc, created):
+                raise QueueError("PR creation time unavailable")
+            if created < issued:
+                verified_cutoff = True
+                break
+            title, body = str(pr.get("title") or ""), str(pr.get("body") or "")
+            if ("Worker: issue #" + key) in title or ("Source task: #" + key) in body:
+                raise QueueError("Pilot may already have a published draft PR")
+        if verified_cutoff or len(prs) < 5:
+            verified_cutoff = True
+            break
+    if not verified_cutoff:
+        raise QueueError("Cannot verify complete post-approval PR history")
     state[key] = {"state": "approved-pilot-retry", "attempts": 1}
     save_ledger(state, path)
     print("Reviewed pilot #462 eligible for one final controlled retry", flush=True)
