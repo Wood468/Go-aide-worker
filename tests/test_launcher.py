@@ -45,7 +45,7 @@ class OptionsBridge(unittest.TestCase):
 
     def test_edit_key_kept_in_memory(self):
         self.write(job_action="edit", job_prompt="fix", enable_edits=True, gemini_api_key="dummy-only")
-        self.assertEqual(launcher.read_options(self.path), ("edit", "fix", True, "dummy-only", False, ""))
+        self.assertEqual(launcher.read_options(self.path), ("edit", "fix", True, "dummy-only", False, "", ""))
 
     def test_github_token_stays_out_of_worker_environment(self):
         self.write(job_action="idle", job_prompt="", enable_edits=False,
@@ -145,6 +145,24 @@ class OptionsBridge(unittest.TestCase):
         with self.assertRaises(launcher.ConfigurationError):
             launcher.protect_options(link)
 
+    def test_explicit_edit_file_paths_are_restricted(self):
+        self.write(job_action="edit", job_prompt="edit file", enable_edits=True,
+                   gemini_api_key="dummy", edit_files="WORKER_SMOKE_TEST.txt,src/example.py")
+        opts = launcher.read_options(self.path)
+        self.assertEqual(opts[-1], "WORKER_SMOKE_TEST.txt,src/example.py")
+        for unsafe in ("../options.json", ".github/workflows/a.yml",
+                       "hello.py,../../data/options.json", "-unsafe.py"):
+            with self.subTest(unsafe=unsafe):
+                self.write(job_action="edit", job_prompt="edit", enable_edits=True,
+                           gemini_api_key="dummy", edit_files=unsafe)
+                with self.assertRaises(launcher.ConfigurationError):
+                    launcher.read_options(self.path)
+
+    def test_non_edit_cannot_select_files(self):
+        self.write(job_action="inspect", edit_files="README.md")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
         with self.assertRaises(launcher.ConfigurationError):
@@ -175,7 +193,7 @@ class OptionsBridge(unittest.TestCase):
 
     def test_no_work_when_idle(self):
         self.write(job_action="idle", job_prompt="", enable_edits=False, gemini_api_key="")
-        with (patch.object(launcher, "read_options", return_value=("idle", "", False, "", False, "")),
+        with (patch.object(launcher, "read_options", return_value=("idle", "", False, "", False, "", "")),
               patch.object(launcher, "prepare_directory"),
               patch.object(launcher, "protect_options"),
               patch.object(launcher.os, "geteuid", return_value=0),
