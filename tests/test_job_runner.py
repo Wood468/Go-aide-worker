@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 PATH = Path(__file__).resolve().parents[1] / "addon/job_runner.py"
 spec = importlib.util.spec_from_file_location("job_runner", PATH)
@@ -57,6 +57,21 @@ class RestrictedJobs(unittest.TestCase):
             (self.workspace / ".git").rmdir()
             with self.assertRaises(runner.JobError):
                 runner.validate_job(self.job("edit", "Change a test"), self.workspace)
+
+    def test_timeout_kills_process_group(self):
+        import json
+        from subprocess import TimeoutExpired
+        with tempfile.TemporaryDirectory() as tmp:
+            job = Path(tmp) / "job.json"
+            job.write_text(json.dumps(self.job("inspect")))
+            process = MagicMock()
+            process.pid = 4242
+            process.wait.side_effect = [TimeoutExpired("git", 300), 0]
+            with patch.object(runner.subprocess, "Popen", return_value=process), \\
+                 patch.object(runner.os, "killpg") as killpg:
+                with self.assertRaises(runner.JobError):
+                    runner.run(job, self.workspace)
+                killpg.assert_called_once_with(4242, runner.signal.SIGTERM)
 
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
