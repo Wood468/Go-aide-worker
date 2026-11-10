@@ -255,5 +255,17 @@ class OptionsBridge(unittest.TestCase):
                    enable_queue=True, gemini_api_key="", github_token="")
         self.assertEqual(launcher.read_options(self.path)[0], "queue_recover_pilot")
 
+
+    def test_code_pilot_recovery_requires_manual_queue_approval_without_keys(self):
+        self.write(job_action="queue_recover_code_pilot", job_prompt="", edit_files="",
+                   enable_edits=False, enable_publishing=False,
+                   enable_queue=False, gemini_api_key="", github_token="")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+        self.write(job_action="queue_recover_code_pilot", job_prompt="", edit_files="",
+                   enable_edits=False, enable_publishing=False,
+                   enable_queue=True, gemini_api_key="", github_token="")
+        self.assertEqual(launcher.read_options(self.path)[0], "queue_recover_code_pilot")
+
 if __name__ == "__main__":
     unittest.main()
