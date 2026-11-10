@@ -6,7 +6,7 @@ import sys
 import urllib.error
 import urllib.request
 
-URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
 PROMPT = "Reply with exactly the word READY and nothing else."
 
 
