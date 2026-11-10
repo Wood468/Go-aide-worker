@@ -15,7 +15,7 @@ JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
 TIMEOUT_SECONDS = 300
-ALLOWED_ACTIONS = {"refresh", "inspect", "test", "edit", "prepare", "verify", "publish", "publish_test", "probe", "direct_edit", "queue_scan", "queue_once", "queue_loop"}
+ALLOWED_ACTIONS = {"refresh", "inspect", "test", "edit", "prepare", "verify", "publish", "publish_test", "probe", "direct_edit", "queue_scan", "queue_once", "queue_loop", "queue_reset"}
 MODEL = "gemini/gemini-3.5-flash-lite"
 
 
@@ -90,6 +90,8 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Gemini key not configured")
     if action in {"queue_once", "queue_loop"} and (os.environ.get("ENABLE_QUEUE") != "true" or not os.environ.get("GITHUB_TOKEN") or not os.environ.get("GEMINI_API_KEY")):
         raise JobError("Queue execution not explicitly enabled")
+    if action == "queue_reset" and not re.fullmatch(r"[1-9][0-9]{0,9}", prompt):
+        raise JobError("Queue recovery requires issue number")
     if action == "probe" and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini API key not configured for probe")
     if action in {"publish", "publish_test"} and (os.environ.get("ENABLE_PUBLISHING") != "true" or not os.environ.get("GITHUB_TOKEN")):
@@ -124,6 +126,8 @@ def command_for(action, prompt):
         return [sys.executable, "/opt/worker/publisher.py"]
     if action == "publish_test":
         return [sys.executable, "/opt/worker/publisher.py", "--smoke"]
+    if action == "queue_reset":
+        return [sys.executable, "/opt/worker/queue_worker.py", "reset", prompt]
     if action in {"queue_scan", "queue_once", "queue_loop"}:
         mode = {"queue_scan": "scan", "queue_once": "once", "queue_loop": "loop"}[action]
         return [sys.executable, "/opt/worker/queue_worker.py", mode]
