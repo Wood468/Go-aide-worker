@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-WORKSPACE = Path("/data/workspace").resolve()
+WORKSPACE = Path("/data/workspace")
 JOB_FILE = Path("/data/job.json")
 MAX_JOB_BYTES = 8192
 MAX_PROMPT_CHARS = 3000
@@ -24,7 +24,7 @@ def validate_job(raw, workspace=WORKSPACE):
     if not isinstance(raw, dict) or set(raw) != {"action", "prompt"}:
         raise JobError("Job must contain only action and prompt")
     action, prompt = raw["action"], raw["prompt"]
-    if action not in ALLOWED_ACTIONS:
+    if not isinstance(action, str) or action not in ALLOWED_ACTIONS:
         raise JobError("Unsupported action")
     if not isinstance(prompt, str) or len(prompt) > MAX_PROMPT_CHARS:
         raise JobError("Invalid prompt length")
@@ -36,7 +36,7 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Gemini key not configured")
     if not workspace.is_dir() or workspace.is_symlink():
         raise JobError("Workspace must be a real directory")
-    if action in {"test", "edit"} and not (workspace / ".git").is_dir():
+    if action in {"test", "edit"} and ((workspace / ".git").is_symlink() or not (workspace / ".git").is_dir()):
         raise JobError("Workspace must contain a checked-out Git repository")
     return action, prompt
 
@@ -60,11 +60,16 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     cmd = command_for(action, prompt)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
+    env = dict(os.environ) if action == "edit" else {
+        key: os.environ[key] for key in ("PATH", "HOME", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE")
+        if key in os.environ
+    }
+    env["GIT_TERMINAL_PROMPT"] = "0"
     process = subprocess.Popen(
         cmd, cwd=workspace, stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        env=env,
     )
     try:
         return_code = process.wait(timeout=TIMEOUT_SECONDS)
@@ -78,7 +83,7 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
             process.wait()
         raise JobError("Job timed out") from exc
     print(f"Job finished with exit code {return_code}", flush=True)
-    return completed.returncode
+    return return_code
 
 
 if __name__ == "__main__":
