@@ -1,22 +1,31 @@
-# GO Field Notes — Aider worker prototype
+# GO Field Notes — isolated Aider worker (prototype)
 
-**Prototype only — do not install or run unattended.**
+**Not installation-ready. Do not install on Home Assistant or supply real credentials yet.**
 
-This repository contains unvalidated Home Assistant add-on scaffolding for an isolated Aider worker. It is not yet a working autonomous agent. The startup script deliberately stays idle.
+This draft add-on contains a **local-only restricted job runner**, not a network service or autonomous issue/PR agent.
 
-## Intended boundaries
-- No Home Assistant API, Supervisor API, Docker API, host networking, or host configuration mounts.
-- Add-on-private workspace only.
-- No production credentials, deployment access, or automatic repository changes.
-- Manual startup; no remote shell or job interface in this prototype.
+## Implemented safeguards
+- Container starts as unprivileged user `coder` (UID 10001).
+- Idle by default. A local job is attempted only when `RUN_LOCAL_JOB=true`.
+- Job must be a JSON file at `/data/job.json` with exactly `action` and `prompt`.
+- Allowed actions: `inspect` (git status), `test` (Python unittest discovery), `edit` (Aider with fixed Gemini model).
+- Edits require `ENABLE_EDITS=true` and `GEMINI_API_KEY`; no arbitrary shell command input.
+- Prompt limit 3,000 characters, file limit 8 KiB, subprocess timeout 300 seconds.
+- No Home Assistant/Supervisor/Docker APIs, host networking, privileged access or host config mounts.
+- No GitHub credentials, repository clone, push, PR creation, or deployment functionality.
 
-## Blocking work before installation
-1. Verify Home Assistant add-on build compatibility and dependency versions in a disposable environment.
-2. Implement a bounded job interface running as a non-root user, with strict timeouts and resource limits.
-3. Verify model support, Google API quotas, credential handling and redacted logs.
-4. Add read-only checkout and test against a disposable GitHub repository before enabling branch/PR writes.
-5. Verify isolation and GitHub Actions checks. Never give the worker production deployment secrets.
+## Example job format (documentation only)
+```json
+{"action":"inspect","prompt":""}
+```
 
-The current Dockerfile and metadata are **unvalidated scaffolding**, not installation instructions. Do not install until build and security verification are completed.
+The job file and a Git checkout must be provisioned in the isolated add-on workspace through a separately designed mechanism. No mechanism exists yet to submit jobs remotely or import repositories safely.
 
-Keep API keys out of GitHub, chats, issues and commits.
+## Remaining release gates
+1. Validate Home Assistant add-on metadata, writable `/data` permissions, and full runtime on a disposable instance.
+2. Verify Aider's exact CLI/model support and safe subprocess termination; ensure secrets and prompts cannot appear in logs.
+3. Build a safe job submission, repository checkout and GitHub PR workflow with least-privilege credentials.
+4. Run disposable-repository end-to-end tests, including timeout, malformed jobs, read-only defaults and security isolation.
+5. Confirm Google AI Studio quotas and user privacy implications.
+
+No installation, merge, or production deployment has been approved. Keep secrets out of GitHub, chats, issues and commits.
