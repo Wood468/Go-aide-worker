@@ -73,6 +73,16 @@ class SingleFileEditorTests(unittest.TestCase):
                 editor.edit(self.folder,["README.md"],"test","dummy",
                     generator=lambda key,prompt,path,existing:"unsafe")
 
+    def test_approved_queue_prompt_never_reads_root_job_file(self):
+        with (patch.dict(os.environ,{"QUEUE_TASK_PROMPT":"Write a simple reviewed QA checklist.",
+                                   "EDIT_FILES":"WORKER_SMOKE_TEST.txt",
+                                   "GEMINI_API_KEY":"dummy"},clear=True),
+              patch.object(editor.job_runner,"WORKSPACE",self.folder),
+              patch.object(editor.job_runner,"JOB_FILE",self.folder/"nonexistent-job.json"),
+              patch.object(editor,"edit",return_value=True) as edit):
+            editor.main()
+            self.assertEqual(edit.call_args.args[2],"Write a simple reviewed QA checklist.")
+
     def test_rejects_symlinked_target(self):
         (self.folder/"other.txt").write_text("unchanged")
         self.target.symlink_to(self.folder/"other.txt")
