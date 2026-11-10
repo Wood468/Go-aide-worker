@@ -130,9 +130,13 @@ class OptionsBridge(unittest.TestCase):
 
     def test_options_file_is_root_private(self):
         self.write(job_action="idle", github_token="dummy-token")
-        with patch.object(launcher.os, "chown"):
+        from types import SimpleNamespace
+        with (patch.object(launcher.os, "chown") as chown,
+              patch.object(launcher.os, "chmod") as chmod,
+              patch.object(launcher.Path, "stat", return_value=SimpleNamespace(st_uid=0, st_mode=0o100600))):
             launcher.protect_options(self.path)
-        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        chown.assert_called_once_with(self.path, 0, 0)
+        chmod.assert_called_once_with(self.path, 0o600)
 
     def test_rejects_options_symlink_for_privacy(self):
         original = self.write(job_action="idle", github_token="dummy")
