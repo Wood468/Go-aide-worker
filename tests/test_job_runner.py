@@ -71,7 +71,7 @@ class RestrictedJobs(unittest.TestCase):
                   patch.object(runner.os, "killpg") as killpg):
                 with self.assertRaises(runner.JobError):
                     runner.run(job, self.workspace)
-                killpg.assert_called_once_with(4242, runner.signal.SIGTERM)
+                killpg.assert_called_once_with(4242, runner.signal.SIGKILL)
 
     def test_successful_job_returns_exit_code_and_scrubs_key(self):
         import json
