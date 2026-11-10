@@ -8,6 +8,12 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.3: acknowledge the already-merged approved code pilot
+
+The owner-approved #465 test-only worker task produced draft PR #467, which was reviewed, passed required CI and was squash-merged into the app. Its local queue ledger remained `needs-review`, which correctly blocks future automatic jobs until reconciled.
+
+The one-off `queue_ack_code_pilot` action checks **exactly** closed owner-approved issue #465 and merged review PR #467 against the GitHub API (including task path, author, PR source, merge metadata and worker branch). It may only transition the two-attempt `needs-review` entry to `submitted` for PR #467; it never retries the task, edits a file, creates a PR or merges. No general ledger reset is available. To use, keep edits/publishing OFF, select `enable_queue: true` and action `queue_ack_code_pilot`, restart, inspect `queue_status`, then return to Idle/off. Only activate continuous `queue_loop` after complete CI verification and confirming no unreviewed draft PR remains.
+
 ## v0.5.2: exact reviewed code-pilot recovery
 
 The first owner-approved single-file regression pilot #465 was safely held `needs-review` after v0.5.0 publishing rejected an otherwise allowed `.test.mjs` path. v0.5.1 resolves that publisher mismatch. New `queue_recover_code_pilot` is a **one-time, explicit** HA action, requiring `enable_queue:true` with editing/publishing OFF; it inspects exact owner-approved issue #465 and every recent PR since its creation, refuses any previous published draft, refuses multiple recoveries and never edits or publishes. Then a separately authorised `queue_once` performs the second and final pilot attempt. Failures remain review-only and no third attempt is possible. Keep continuous `queue_loop` disabled until the new draft's diff and CI are reviewed.
