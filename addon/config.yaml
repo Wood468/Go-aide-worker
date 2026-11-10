@@ -1,12 +1,12 @@
 name: "GO Aider Worker (Prototype)"
-version: "0.5.0"
+version: "0.5.1"
 slug: "go_aider_worker"
 description: "Isolated, one-job-at-a-time Gemini/Aider worker; experimental"
 url: "https://github.com/Wood468/Go-aide-worker"
 arch:
   - amd64
 startup: application
-boot: manual
+boot: auto
 init: false
 hassio_api: false
 homeassistant_api: false

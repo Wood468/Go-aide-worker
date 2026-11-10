@@ -1,12 +1,20 @@
 # GO Field Notes — isolated Aider worker (prototype)
 
-**Experimental. Installed in Home Assistant; GitHub publishing is not implemented.**
+**Experimental. Direct Gemini editing and draft-PR publishing are verified; no automatic merges or deployments.**
 
-This draft add-on contains a **local-only restricted job runner**, not a network service or autonomous issue/PR agent.
+This add-on can run an **opt-in GitHub-approved task queue** without exposing an inbound network service or unconstrained shell agent.
 
 ## GitHub token field (v0.2.1)
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
+
+## v0.5.1: restricted JS publishing and reboot-safe startup
+
+- Closed pilot issue #462 produced a single reviewed documentation draft PR #464, which was closed without merging. The live v0.4.3 `queue_loop` started and polled with no other approved tasks.
+- The v0.5.0 test-editor extension previously allowed only `test/*.test.mjs` edits, but the publisher rejected all `.mjs` paths. Publishing now accepts **only existing, tracked, flat `test/*.test.mjs` files**, not arbitrary, nested, or newly created `.mjs` files. Offline Git fixtures verify both permitted and forbidden cases.
+- Home Assistant add-on declares `boot: auto` so it can start after HAOS reboot. This does not turn on editing or publishing by itself: defaults remain `job_action: idle`, `enable_queue: false`, `enable_edits: false`, `enable_publishing: false`. Persisted operator-selected queue-loop flags are an explicit opt-in.
+- Pause immediately through Home Assistant Configuration: set Job to Idle, turn off all three queue/edit/publish flags, then restart the add-on.
+- A full HAOS reboot has **not** been performed for acceptance; test it when safe for other home automations.
 
 ## v0.5.0: one approved JavaScript regression-test file per task
 

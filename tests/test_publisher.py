@@ -40,6 +40,39 @@ class DraftPublisher(unittest.TestCase):
         self.assertEqual(head, self.sha)
         self.assertEqual(files, [("README.md", b"Proposed\n")])
 
+    def test_accepts_existing_flat_js_regression_file(self):
+        folder = self.root / "test"
+        folder.mkdir()
+        target = folder / "attendance-classification.test.mjs"
+        target.write_text("import test from 'node:test';\n")
+        self.git("add", "test/attendance-classification.test.mjs")
+        self.git("commit", "-qm", "Add tracked regression test")
+        expected_sha = self.git("rev-parse", "HEAD").strip()
+        target.write_text("import test from 'node:test';\ntest('ok', () => {});\n")
+        head, files = publisher.safe_files(self.root)
+        self.assertEqual(head, expected_sha)
+        self.assertEqual(files[0][0], "test/attendance-classification.test.mjs")
+
+    def test_rejects_new_untracked_js_regression_file(self):
+        folder = self.root / "test"
+        folder.mkdir()
+        (folder / "new-feature.test.mjs").write_text("export default 1;\n")
+        with self.assertRaises(publisher.PublishError):
+            publisher.safe_files(self.root)
+
+    def test_rejects_arbitrary_tracked_mjs_and_nested_test_file(self):
+        for name in ("test/runner.mjs", "test/helpers/qa.test.mjs", "src/qa.test.mjs"):
+            with self.subTest(name=name):
+                target = self.root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("export const before = 1;\n")
+                self.git("add", name)
+                self.git("commit", "-qm", "Seed test fixture")
+                target.write_text("export const after = 2;\n")
+                with self.assertRaises(publisher.PublishError):
+                    publisher.safe_files(self.root)
+                self.git("restore", name)
+
     def test_rejects_no_changes(self):
         with self.assertRaises(publisher.PublishError):
             publisher.safe_files(self.root)
