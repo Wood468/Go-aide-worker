@@ -141,6 +141,15 @@ class RestrictedJobs(unittest.TestCase):
         with patch.dict(os.environ, {"ENABLE_PUBLISHING": "true", "GITHUB_TOKEN": "dummy"}):
             self.assertEqual(runner.validate_job(self.job("publish"), self.workspace)[0], "publish")
 
+    def test_publish_test_requires_optin_and_uses_smoke_only(self):
+        with patch.dict(os.environ, {"ENABLE_PUBLISHING": "false", "GITHUB_TOKEN": "dummy"}):
+            with self.assertRaises(runner.JobError):
+                runner.validate_job(self.job("publish_test"), self.workspace)
+        with patch.dict(os.environ, {"ENABLE_PUBLISHING": "true", "GITHUB_TOKEN": "dummy"}):
+            self.assertEqual(runner.validate_job(self.job("publish_test"), self.workspace)[0], "publish_test")
+            self.assertEqual(runner.command_for("publish_test", ""),
+                             [runner.sys.executable, "/opt/worker/publisher.py", "--smoke"])
+
     def test_verify_detects_actual_smoke_file(self):
         import json
         with tempfile.TemporaryDirectory() as tmp:
