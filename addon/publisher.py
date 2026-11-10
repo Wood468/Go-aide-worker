@@ -12,6 +12,7 @@ import re
 import secrets
 import stat
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 
@@ -107,7 +108,8 @@ def api(token, method, endpoint, payload=None):
                                           "User-Agent": "go-aider-restricted-publisher"})
     try:
         with urllib.request.urlopen(req, timeout=25) as response:
-            return json.loads(response.read(200_000))
+            raw = response.read(200_000)
+            return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
         # Never expose response body, request, token or user-controlled payload.
         raise PublishError("GitHub API refused operation (HTTP " + str(exc.code) + ")") from None
@@ -147,10 +149,65 @@ def publish(workspace, token, request=api, branch_id=None):
     return pr["number"]
 
 
+def smoke_roundtrip(token, request=api, branch_id=None):
+    """Create then close/delete one harmless draft-PR test; never touch main."""
+    if not isinstance(token, str) or not token.strip():
+        raise PublishError("Missing GitHub token")
+    suffix = branch_id or secrets.token_hex(6)
+    if not re.fullmatch(r"[a-f0-9]{12}", suffix):
+        raise PublishError("Invalid test branch suffix")
+    branch = "worker/connectivity-" + suffix
+    base_sha = request(token, "GET", "/git/ref/heads/main")["object"]["sha"]
+    if not re.fullmatch(r"[a-f0-9]{40}", base_sha):
+        raise PublishError("Invalid main SHA")
+    base_tree = request(token, "GET", "/git/commits/" + base_sha)["tree"]["sha"]
+    # Harmless temporary artifact lives on an isolated branch only.
+    path = "docs/worker-connectivity-" + suffix + ".md"
+    content = ("# Temporary worker connection test\n\n"
+               "This draft PR only validates branch creation, draft PR creation "
+               "and cleanup. It must never be merged.\n").encode()
+    blob = request(token, "POST", "/git/blobs", {
+        "content": base64.b64encode(content).decode("ascii"), "encoding": "base64"})
+    tree = request(token, "POST", "/git/trees", {
+        "base_tree": base_tree,
+        "tree": [{"path": path, "mode": "100644", "type": "blob", "sha": blob["sha"]}]})
+    commit = request(token, "POST", "/git/commits", {
+        "message": "test: temporary worker publishing connection check",
+        "tree": tree["sha"], "parents": [base_sha]})
+    branch_created = False
+    number = None
+    try:
+        request(token, "POST", "/git/refs", {
+            "ref": "refs/heads/" + branch, "sha": commit["sha"]})
+        branch_created = True
+        pr = request(token, "POST", "/pulls", {
+            "title": "test: temporary GO Aider worker publishing check",
+            "head": branch, "base": "main", "draft": True,
+            "body": "Connectivity test only. Never merge. Will be closed and its branch deleted automatically."})
+        if pr.get("draft") is not True or not isinstance(pr.get("number"), int):
+            raise PublishError("GitHub did not confirm draft PR")
+        number = pr["number"]
+    finally:
+        if number is not None:
+            request(token, "PATCH", "/pulls/" + str(number), {"state": "closed"})
+        if branch_created:
+            request(token, "DELETE", "/git/refs/heads/" + branch)
+    if number is None:
+        raise PublishError("Draft PR was not created")
+    return number
+
+
 def main():
     try:
-        number = publish(Path("/data/workspace/source"), os.environ.get("GITHUB_TOKEN", ""))
-        print("Created draft PR #" + str(number) + "; review required", flush=True)
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if len(sys.argv) == 2 and sys.argv[1] == "--smoke":
+            number = smoke_roundtrip(token)
+            print("Temporary draft PR #" + str(number) + " created, closed, branch deleted", flush=True)
+        elif len(sys.argv) == 1:
+            number = publish(Path("/data/workspace/source"), token)
+            print("Created draft PR #" + str(number) + "; review required", flush=True)
+        else:
+            raise PublishError("Unsupported publishing action")
     except (PublishError, OSError, ValueError, KeyError, TypeError) as exc:
         # External exception strings could contain request information.
         print("Publishing rejected: " + (str(exc) if isinstance(exc, PublishError) else type(exc).__name__),
