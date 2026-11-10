@@ -71,6 +71,15 @@ class OptionsBridge(unittest.TestCase):
         with self.assertRaises(launcher.ConfigurationError):
             launcher.read_options(self.path)
 
+    def test_edit_failure_has_safe_static_reason(self):
+        self.write(job_action="edit", job_prompt="small change",
+                   enable_edits=False, gemini_api_key="dummy-should-not-be-logged",
+                   github_token="dummy-github-token")
+        with self.assertRaises(launcher.ConfigurationError) as failure:
+            launcher.read_options(self.path)
+        self.assertEqual(str(failure.exception), "Edit requires enabled mode, prompt and Gemini key")
+        self.assertNotIn("dummy-", str(failure.exception))
+
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
         with self.assertRaises(launcher.ConfigurationError):
