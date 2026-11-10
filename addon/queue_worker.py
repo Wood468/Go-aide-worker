@@ -150,15 +150,73 @@ def has_pending_review(state, fetch=github_read):
     return False
 
 
+
+# Recovery is deliberately limited to the existing, reviewed, documentation-only
+# acceptance pilot. No general-purpose ledger reset or automatic retry exists.
+PILOT_ISSUE = 462
+PILOT_PATH = "docs/worker-task-queue-pilot.md"
+
+
+def ledger_summary(path=LEDGER):
+    state = read_ledger(path)
+    for key, entry in sorted(state.items()):
+        status = entry.get("state", "invalid") if isinstance(entry, dict) else "invalid"
+        if status not in {"started", "needs-review", "submitted", "approved-pilot-retry"}:
+            status = "invalid"
+        print("Worker queue #" + str(key) + ": " + status, flush=True)
+    if not state:
+        print("Worker queue ledger empty; no tasks claimed", flush=True)
+    return state
+
+
+def approved_for_dispatch(task, state):
+    key = str(task["issue"])
+    if key not in state:
+        return True
+    previous = state.get(key)
+    return (key == str(PILOT_ISSUE) and isinstance(previous, dict)
+            and previous.get("state") == "approved-pilot-retry"
+            and previous.get("attempts") == 1)
+
+
+def recover_pilot(path=LEDGER, fetch=github_read):
+    state = read_ledger(path)
+    key = str(PILOT_ISSUE)
+    previous = state.get(key)
+    if (not isinstance(previous, dict) or
+            previous.get("state") not in {"started", "needs-review"} or
+            previous.get("attempts", 1) != 1 or "pr" in previous):
+        raise QueueError("Pilot recovery not eligible")
+    issue = parse_task(fetch("https://api.github.com/repos/" + REPO + "/issues/" + key))
+    if not issue or issue["issue"] != PILOT_ISSUE or issue["path"] != PILOT_PATH:
+        raise QueueError("Pilot approval changed")
+    prs = fetch("https://api.github.com/repos/" + REPO +
+                "/pulls?state=all&per_page=100")
+    if not isinstance(prs, list) or len(prs) >= 100:
+        raise QueueError("Cannot exhaustively verify recent worker PRs")
+    for pr in prs:
+        if not isinstance(pr, dict):
+            raise QueueError("Invalid PR history")
+        title, body = str(pr.get("title") or ""), str(pr.get("body") or "")
+        if ("Worker: issue #" + key) in title or ("Source task: #" + key) in body:
+            raise QueueError("Pilot may already have a published draft PR")
+    state[key] = {"state": "approved-pilot-retry", "attempts": 1}
+    save_ledger(state, path)
+    print("Reviewed pilot #462 eligible for one final controlled retry", flush=True)
+    return True
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
-    if key in state or has_pending_review(state, fetch):
+    if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
         return False
     gemini = os.environ.get("GEMINI_API_KEY")
     github = os.environ.get("GITHUB_TOKEN")
     if not gemini or not github:
         raise QueueError("Missing queue credentials")
-    state[key] = {"state": "started"}
+    prior = state.get(key, {})
+    attempts = 2 if isinstance(prior, dict) and prior.get("state") == "approved-pilot-retry" else 1
+    state[key] = {"state": "started", "attempts": attempts}
     save_ledger(state)
     try:
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
@@ -199,12 +257,12 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if matched is None:
             raise QueueError("No verified PR number; inspect GitHub before retry")
         number = int(matched.group(1))
-        state[key] = {"state": "submitted", "pr": number}
+        state[key] = {"state": "submitted", "pr": number, "attempts": attempts}
         save_ledger(state)
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
     except Exception:
-        state[key] = {"state": "needs-review"}
+        state[key] = {"state": "needs-review", "attempts": attempts}
         save_ledger(state)
         raise
 
@@ -213,14 +271,14 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
     tasks = candidates(fetch)
     state = read_ledger(ledger_path)
     if scan:
-        waiting = sum(str(t["issue"]) not in state for t in tasks)
+        waiting = sum(approved_for_dispatch(t, state) for t in tasks)
         print("Approved queued tasks: " + str(waiting) + "; no edits", flush=True)
         return waiting
     if has_pending_review(state, fetch):
         print("Queue paused for review of previous task", flush=True)
         return 0
     for task in tasks:
-        if str(task["issue"]) not in state:
+        if approved_for_dispatch(task, state):
             return int(perform(task, state, fetch, runner))
     print("No approved unprocessed tasks", flush=True)
     return 0
@@ -228,7 +286,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -243,6 +301,10 @@ def main():
                 except (QueueError, OSError, ValueError):
                     print("Queue iteration failed; task held for review", flush=True)
                 time.sleep(600)
+        elif mode == "status":
+            ledger_summary()
+        elif mode == "recover_pilot":
+            recover_pilot()
         else:
             once(scan=(mode == "scan"))
 
