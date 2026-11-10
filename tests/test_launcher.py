@@ -194,6 +194,13 @@ class OptionsBridge(unittest.TestCase):
                    github_token="dummy-github")
         self.assertEqual(launcher.read_options(self.path)[0],"idle")
 
+    def test_queue_reset_requires_numeric_issue(self):
+        self.write(job_action="queue_reset", job_prompt="462")
+        self.assertEqual(launcher.read_options(self.path)[0],"queue_reset")
+        self.write(job_action="queue_reset", job_prompt="rm -rf /")
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+
     def test_rejects_nonstring_action(self):
         self.write(job_action=["idle"])
         with self.assertRaises(launcher.ConfigurationError):
