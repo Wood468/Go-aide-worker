@@ -209,6 +209,17 @@ class RestrictedJobs(unittest.TestCase):
             self.assertNotIn("GEMINI_API_KEY", env)
             self.assertNotIn("GITHUB_TOKEN", env)
 
+    def test_edit_file_selection_is_explicit_and_bounded(self):
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt,src/example.py"}):
+            self.assertEqual(runner.selected_edit_files(self.workspace),
+                             ["WORKER_SMOKE_TEST.txt", "src/example.py"])
+            cmd = runner.command_for("edit", "create a useful file")
+            self.assertEqual(cmd.count("--file"), 2)
+            self.assertIn("WORKER_SMOKE_TEST.txt", cmd)
+        with patch.dict(os.environ, {"EDIT_FILES": "../../data/options.json"}):
+            with self.assertRaises(runner.JobError):
+                runner.selected_edit_files(self.workspace)
+
     def test_no_shell_command_construction(self):
         self.assertEqual(runner.command_for("inspect", ""), ["git", "status", "--short", "--branch"])
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])
