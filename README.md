@@ -10,7 +10,7 @@ Home Assistant's Configuration screen has a masked `GitHub fine-grained token` f
 
 ## v0.4.1: validated job handoff and failure recovery
 
-The queue writes its direct-edit job to `/data/job.json`, matching the existing launcher. All task phases are logged as safe fixed labels. An interrupted or failed task marks its issue `needs-review` and pauses the queue. After checking GitHub to ensure no draft PR was created, choose `queue_reset`, put the numeric failed issue ID in Job Prompt, and restart once to clear only that reviewed failure. The operator then returns the add-on to Idle. This is never automatic.
+The queue passes a validated, bounded instruction only to the isolated direct Gemini child process. It does not write to the root-owned Home Assistant job file. All task phases are logged as safe fixed labels. An interrupted or failed task marks its issue `needs-review` and pauses the queue. After checking GitHub to ensure no draft PR was created, choose `queue_reset`, put the numeric failed issue ID in Job Prompt, and restart once to clear only that reviewed failure. The operator then returns the add-on to Idle. This is never automatic.
 
 ## v0.4.0: approved task queue (limited pilot)
 
