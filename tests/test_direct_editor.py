@@ -82,4 +82,52 @@ class SingleFileEditorTests(unittest.TestCase):
                     generator=lambda key,prompt,path,existing:"unsafe")
         self.assertEqual((self.folder/"other.txt").read_text(),"unchanged")
 
+
+    def test_queue_edit_reads_fixed_unprivileged_job_instead_of_manual_job(self):
+        queue_file = self.folder / "queue-job.json"
+        manual_file = self.folder / "manual-job.json"
+        queue_file.write_text(json.dumps({"action": "direct_edit", "prompt": "approved queue instruction"}))
+        manual_file.write_text(json.dumps({"action": "queue_loop", "prompt": ""}))
+        with (patch.object(editor, "QUEUE_JOB", queue_file),
+              patch.object(editor.job_runner, "JOB_FILE", manual_file),
+              patch.object(editor.job_runner, "WORKSPACE", self.folder),
+              patch.dict(os.environ, {
+                  "GO_WORKER_QUEUE_EDIT": "1", "EDIT_FILES": "WORKER_SMOKE_TEST.txt",
+                  "GEMINI_API_KEY": "dummy-gemini"
+              }),
+              patch.object(editor, "edit", return_value=True) as editing):
+            editor.main()
+            editing.assert_called_once_with(
+                self.folder, ["WORKER_SMOKE_TEST.txt"],
+                "approved queue instruction", "dummy-gemini")
+        # A normal standalone manual edit still reads /data/job.json semantics.
+        manual_file.write_text(json.dumps({"action": "direct_edit", "prompt": "manual instruction"}))
+        with (patch.object(editor, "QUEUE_JOB", queue_file),
+              patch.object(editor.job_runner, "JOB_FILE", manual_file),
+              patch.object(editor.job_runner, "WORKSPACE", self.folder),
+              patch.dict(os.environ, {
+                  "GO_WORKER_QUEUE_EDIT": "0", "EDIT_FILES": "WORKER_SMOKE_TEST.txt",
+                  "GEMINI_API_KEY": "dummy-gemini"
+              }),
+              patch.object(editor, "edit", return_value=True) as editing):
+            editor.main()
+            editing.assert_called_once_with(
+                self.folder, ["WORKER_SMOKE_TEST.txt"], "manual instruction", "dummy-gemini")
+
+    def test_queue_edit_refuses_missing_symlinked_or_oversized_job(self):
+        queue_file = self.folder / "queue-job.json"
+        with (patch.object(editor, "QUEUE_JOB", queue_file),
+              patch.dict(os.environ, {"GO_WORKER_QUEUE_EDIT": "1"})):
+            with self.assertRaises(editor.DirectEditError):
+                editor.selected_job_file()
+            manual = self.folder / "manual-job.json"
+            manual.write_text('{"action":"direct_edit","prompt":"safe"}')
+            queue_file.symlink_to(manual)
+            with self.assertRaises(editor.DirectEditError):
+                editor.selected_job_file()
+            queue_file.unlink()
+            queue_file.write_text("x" * 8193)
+            with self.assertRaises(editor.DirectEditError):
+                editor.selected_job_file()
+
 if __name__=="__main__":unittest.main()
