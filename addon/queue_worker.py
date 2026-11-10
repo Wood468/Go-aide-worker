@@ -181,7 +181,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if [name for name, _data in changed] != [task["path"]]:
             raise QueueError("Changes outside approved file detected")
         out = runner([sys.executable, "/opt/worker/publisher.py"],
-                     child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true"))
+                     child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true", WORKER_ISSUE_NUMBER=key))
         matched = re.search(rb"Created draft PR #(\d+)", out)
         if matched is None:
             raise QueueError("No verified PR number; inspect GitHub before retry")
