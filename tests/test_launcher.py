@@ -278,6 +278,14 @@ class OptionsBridge(unittest.TestCase):
                    enable_edits=False, enable_publishing=False,
                    enable_queue=True, gemini_api_key="", github_token="")
         self.assertEqual(launcher.read_options(self.path)[0], "queue_ack_code_pilot")
+        for flag in ("enable_edits", "enable_publishing"):
+            with self.subTest(flag=flag):
+                self.write(job_action="queue_ack_code_pilot", job_prompt="", edit_files="",
+                           enable_edits=flag == "enable_edits",
+                           enable_publishing=flag == "enable_publishing",
+                           enable_queue=True, gemini_api_key="", github_token="")
+                with self.assertRaises(launcher.ConfigurationError):
+                    launcher.read_options(self.path)
         self.write(job_action="queue_ack_code_pilot", job_prompt="ignore", edit_files="",
                    enable_edits=False, enable_publishing=False,
                    enable_queue=True, gemini_api_key="", github_token="")
