@@ -168,6 +168,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if target.exists() or target.is_symlink() or not target.parent.is_dir():
             raise QueueError("Task must create a new documentation file")
         # Pass bounded instruction only to the direct editor process (no root-owned job file writes).
+        print("Queue phase: edit", flush=True)
         runner([sys.executable, "/opt/worker/direct_editor.py"],
                child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"],
                          QUEUE_TASK_PROMPT=task["instruction"]))
