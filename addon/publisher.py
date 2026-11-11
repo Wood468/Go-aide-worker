@@ -5,6 +5,7 @@ This module is deliberately separate from Aider. The GitHub token is available
 to this process alone for the explicitly opted-in publish action.
 """
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,50 @@ SECRET_MARKERS = (b"-----BEGIN PRIVATE KEY-----", b"github_pat_", b"ghp_", b"gho
 
 class PublishError(Exception):
     pass
+
+
+# Fixed, non-sensitive error categories for queue diagnostics. Never return
+# raw exception details, remote response bodies, request paths or credentials.
+SAFE_PUBLISH_ERRORS = {
+    "Missing GitHub token": "missing-token",
+    "Main moved since checkout; refresh before publishing": "stale-main",
+    "GitHub API unavailable": "github-unavailable",
+    "Approved GitHub task was revoked or changed": "approval-changed",
+    "Edited files differ from approved task scope": "scope",
+    "Restricted changed path": "scope",
+    "Invalid source issue identifier": "task-contract",
+    "Draft PR confirmation missing": "confirmation",
+    "GitHub did not confirm draft PR": "confirmation",
+}
+SAFE_HTTP_ERRORS = {
+    401: "github-permission", 403: "github-permission",
+    409: "github-conflict", 422: "github-conflict",
+    429: "github-rate-limit", 500: "github-service",
+    502: "github-service", 503: "github-service",
+    504: "github-service",
+}
+PUBLISH_CATEGORIES = frozenset(SAFE_PUBLISH_ERRORS.values()) | frozenset(SAFE_HTTP_ERRORS.values()) | {"github-api", "unknown"}
+
+
+def safe_publish_category(error):
+    if not isinstance(error, PublishError):
+        return "unknown"
+    message = str(error)
+    if message in SAFE_PUBLISH_ERRORS:
+        return SAFE_PUBLISH_ERRORS[message]
+    match = re.fullmatch(r"GitHub API refused operation \(HTTP ([0-9]{3})\)", message)
+    if match:
+        return SAFE_HTTP_ERRORS.get(int(match.group(1)), "github-api")
+    return "unknown"
+
+
+def queued_branch_suffix(issue_number, base_sha):
+    """Stable per issue/main-base, so crashes cannot create fresh random refs."""
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", issue_number):
+        raise PublishError("Invalid source issue identifier")
+    if not re.fullmatch(r"[a-f0-9]{40}", base_sha):
+        raise PublishError("Invalid base commit")
+    return hashlib.sha256((issue_number + ":" + base_sha).encode("ascii")).hexdigest()[:12]
 
 
 def local_git(workspace, *args):
@@ -175,13 +220,17 @@ def publish(workspace, token, request=api, branch_id=None):
     commit = request(token, "POST", "/git/commits", {
         "message": "Worker: isolated proposed changes for review",
         "tree": new_tree["sha"], "parents": [base_sha]})
-    branch = "worker/review-" + (branch_id or secrets.token_hex(6))
-    if not re.fullmatch(r"worker/review-[a-f0-9]{12}", branch):
-        raise PublishError("Invalid worker branch")
-    request(token, "POST", "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit["sha"]})
     source_issue = os.environ.get("WORKER_ISSUE_NUMBER", "")
     if source_issue and (not source_issue.isdecimal() or len(source_issue) > 10):
         raise PublishError("Invalid source issue identifier")
+    suffix = branch_id or (queued_branch_suffix(source_issue, base_sha)
+                           if source_issue else secrets.token_hex(6))
+    branch = "worker/review-" + suffix
+    if not re.fullmatch(r"worker/review-[a-f0-9]{12}", branch):
+        raise PublishError("Invalid worker branch")
+    # A prior ambiguous attempt with this task/base leaves this same branch.
+    # The second creation must fail closed (HTTP 422): never spawn a second PR.
+    request(token, "POST", "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit["sha"]})
     pr = request(token, "POST", "/pulls", {
         "title": ("Worker: issue #" + source_issue + " draft changes" if source_issue else
                   "Worker: proposed isolated changes (review required)"),
@@ -253,9 +302,8 @@ def main():
         else:
             raise PublishError("Unsupported publishing action")
     except (PublishError, OSError, ValueError, KeyError, TypeError) as exc:
-        # External exception strings could contain request information.
-        print("Publishing rejected: " + (str(exc) if isinstance(exc, PublishError) else type(exc).__name__),
-              flush=True)
+        # Only a fixed category, never an exception message or remote response.
+        print("WORKER_PUBLISH_DIAGNOSTIC:" + safe_publish_category(exc), flush=True)
         raise SystemExit(2)
 
 

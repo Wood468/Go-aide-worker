@@ -301,5 +301,73 @@ class DraftPublisher(unittest.TestCase):
         self.git("restore",pair[1])
         self.assertFalse(perform())
 
+    def test_publish_diagnostics_are_fixed_and_never_echo_secrets(self):
+        secret = "ghp_example_secret_should_never_be_logged"
+        self.assertEqual(publisher.safe_publish_category(
+            publisher.PublishError("Missing GitHub token")), "missing-token")
+        self.assertEqual(publisher.safe_publish_category(
+            publisher.PublishError("GitHub API refused operation (HTTP 503)")),
+            "github-service")
+        self.assertEqual(publisher.safe_publish_category(
+            publisher.PublishError("GitHub API refused operation (HTTP 429)")),
+            "github-rate-limit")
+        self.assertEqual(publisher.safe_publish_category(
+            publisher.PublishError(secret)), "unknown")
+        self.assertEqual(publisher.safe_publish_category(RuntimeError(secret)),
+                         "unknown")
+        self.assertNotIn(secret, publisher.safe_publish_category(
+            publisher.PublishError(secret)))
+
+    def test_queue_branch_suffix_is_stable_and_rejects_bad_identifiers(self):
+        base = "a" * 40
+        suffix = publisher.queued_branch_suffix("550", base)
+        self.assertEqual(len(suffix), 12)
+        self.assertEqual(suffix, publisher.queued_branch_suffix("550", base))
+        self.assertNotEqual(suffix, publisher.queued_branch_suffix("551", base))
+        self.assertNotEqual(suffix, publisher.queued_branch_suffix("550", "b" * 40))
+        for issue, sha in [("0", base), ("-1", base), ("550/evil", base),
+                           ("550", "not-a-sha"), ("550", "A" * 40)]:
+            with self.assertRaises(publisher.PublishError):
+                publisher.queued_branch_suffix(issue, sha)
+
+
+    def test_queued_duplicate_branch_cannot_create_second_pr(self):
+        (self.root / "README.md").write_text("Changed\n")
+        refs = []
+        outcomes = []
+        for existing in (False, True):
+            calls = []
+            def request(token, method, endpoint, payload=None):
+                calls.append((method, endpoint, payload))
+                if endpoint == "/git/ref/heads/main":
+                    return {"object": {"sha": self.sha}}
+                if endpoint == "/git/commits/" + self.sha:
+                    return {"tree": {"sha": "base-tree"}}
+                if endpoint == "/git/blobs":
+                    return {"sha": "blob-sha"}
+                if endpoint == "/git/trees":
+                    return {"sha": "new-tree"}
+                if endpoint == "/git/commits":
+                    return {"sha": "new-commit"}
+                if endpoint == "/git/refs":
+                    refs.append(payload["ref"])
+                    if existing:
+                        raise publisher.PublishError("GitHub API refused operation (HTTP 422)")
+                    return {}
+                if endpoint == "/pulls":
+                    return {"draft": True, "number": 600}
+                self.fail("Unexpected remote operation")
+            with patch.dict(os.environ, {"WORKER_ISSUE_NUMBER": "550"}):
+                if existing:
+                    with self.assertRaises(publisher.PublishError):
+                        publisher.publish(self.root, "dummy", request)
+                else:
+                    self.assertEqual(publisher.publish(self.root, "dummy", request), 600)
+            outcomes.append(calls)
+        self.assertEqual(refs, ["refs/heads/worker/review-" +
+                               publisher.queued_branch_suffix("550", self.sha)] * 2)
+        self.assertFalse(any(endpoint == "/pulls" for _, endpoint, _ in outcomes[1]),
+                         "Existing ambiguous branch must never create duplicate PR")
+
 if __name__ == "__main__":
     unittest.main()

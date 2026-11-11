@@ -8,6 +8,16 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.18: safe publish diagnostics and one-time #550 recovery
+
+A failed publisher subprocess now reports only a static allowlisted failure category (for example `stale-main`, `github-conflict`, `github-permission` or `unknown`). The durable queue ledger and credential-free `queue_status` retain the category alongside the failure stage; raw GitHub errors, model output, URLs and credentials are never persisted or displayed. Historical #550 remains an unclassified `needs-review` publishing failure; the original cause cannot be reconstructed from suppressed logs.
+
+Queue-origin publishing uses a deterministic branch suffix based on the issue number and checked-out main SHA. A failed attempt that already created its branch cannot silently create a second branch or draft PR for the same issue/base. A duplicate remote ref fails closed and requires manual reconciliation; the worker still does not retry publishing or merge automatically.
+
+The credential-free `queue_retire_places_publish_task` action can retire **only** deapproved app issue #550 with its exact owner/title/flat test path and a single historical `publish` failure. Before touching its one ledger record, it reviews bounded complete post-issue PR history and every still-live worker/review branch's changed paths to exclude a previously published PR or ambiguous unpublished `test/places.test.mjs` modification. Any uncertainty refuses retirement. It cannot run Gemini, edit code, publish, clear other records, or retry #550.
+
+**Rollout:** inspect and pass latest-head Python/static and Docker CI, review the full diff, merge the worker PR, then install v0.5.18 with queue/edit/publishing OFF. Confirm the live task is still deapproved. Run the one-time retirement using `job_action: queue_retire_places_publish_task`, `enable_queue: true`, and edit/publish **false**; verify `#550: retired` using `queue_status`; return immediately to idle/all flags OFF. Only then assign a **new, non-overlapping, legacy one-file** test issue for a controlled unattended queue acceptance. Do not replay #550 or enable unattended multi-file tasks.
+
 ## v0.5.17: bounded model-service retry and guarded two-file retirement
 
 On v0.5.16, controlled two-file source+test [pilot #531](https://github.com/Wood468/crispy-barnacle/issues/531) was claimed and reached `edit-source`, then failed with the durable fixed category `service`. No draft PR was created. Editing and publication were disabled and the original approval removed. This category indicates an HTTP service failure, **not** quota/auth/safety, but the exact upstream HTTP status was intentionally not recorded.
