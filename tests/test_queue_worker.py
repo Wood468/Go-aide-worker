@@ -1129,4 +1129,70 @@ class WorkerQueueTests(unittest.TestCase):
         self.assertEqual(fail(403,"40"),"Queue request unavailable")
         self.assertEqual(fail(500),"Queue request unavailable")
 
+
+    def test_two_file_service_pilot_retirement_is_exact_and_no_retry(self):
+        item=issue(number=531)
+        item["title"]="[GO-WORKER] v0.5.16 disposable two-file Today source/test acceptance pilot"
+        item["body"]="GO_WORKER_TASK_JSON:"+json.dumps({
+            "version":2,"paths":["public/today.js","test/today-logic.test.mjs"],
+            "instruction":"Append exactly one harmless comment to the two allowed files."})
+        item["labels"]=[]
+        original={"state":"needs-review","attempts":1,
+                  "failure_stage":"edit-source","failure_category":"service"}
+        def scenario(change=None,record=None):
+            with tempfile.TemporaryDirectory() as folder:
+                ledger=Path(folder)/"ledger.json"
+                before={"531":record if record is not None else original,
+                        "525":{"state":"submitted","pr":526}}
+                q.save_ledger(before,ledger)
+                remote={**item,**(change or {}).get("issue",{})}
+                def fetch(url):
+                    if url.endswith("/issues/531"):
+                        return remote
+                    if "/pulls?" in url:
+                        return (change or {}).get("history",[])
+                    self.fail("Unexpected endpoint")
+                if change is not None or record is not None:
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_two_file_service_task(ledger,fetch)
+                    self.assertEqual(q.read_ledger(ledger),before)
+                else:
+                    self.assertTrue(q.retire_failed_two_file_service_task(ledger,fetch))
+                    actual=q.read_ledger(ledger)
+                    self.assertEqual(actual["531"],{
+                        "state":"retired","attempts":1,
+                        "reason":"failed-two-file-service-pilot"})
+                    self.assertEqual(actual["525"],before["525"])
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_two_file_service_task(ledger,fetch)
+        scenario()
+        for change in (
+            {"issue":{"labels":[{"name":"go-worker-approved"}]}},
+            {"issue":{"user":{"login":"not-wood468"}}},
+            {"issue":{"state":"closed"}},
+            {"issue":{"title":"[GO-WORKER] wrong"}},
+            {"issue":{"body":"GO_WORKER_TASK_JSON:{}"}},
+            {"history":[{"title":"Worker: issue #531 draft changes",
+                         "body":"Source task: #531",
+                         "created_at":"2026-11-11T09:00:00Z"}]},
+            {"history":[{"title":"Unrelated","body":"",
+                         "created_at":"invalid"}]},
+        ):
+            with self.subTest(change=change):
+                scenario(change=change)
+        for invalid in (
+            {"state":"needs-review","attempts":2,
+             "failure_stage":"edit-source","failure_category":"service"},
+            {"state":"needs-review","attempts":1,
+             "failure_stage":"edit-source","failure_category":"quota"},
+            {"state":"needs-review","attempts":1,
+             "failure_stage":"edit-test","failure_category":"service"},
+            {"state":"needs-review","attempts":1,
+             "failure_stage":"edit-source","failure_category":"service",
+             "pr":999},
+            {"state":"retired","attempts":1},
+        ):
+            with self.subTest(invalid=invalid):
+                scenario(record=invalid)
+
 if __name__=="__main__":unittest.main()
