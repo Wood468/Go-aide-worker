@@ -363,19 +363,19 @@ class RestrictedJobs(unittest.TestCase):
 
     def test_queue_once_outcome_is_fixed_and_never_leaks_untrusted_output(self):
         self.assertEqual(runner.safe_queue_outcome(
-            b"Worker queue #550: retired\\nSubmitted issue #574 as draft PR #578\\n"),
+            b"Worker queue #550: retired\nSubmitted issue #574 as draft PR #578\n"),
             "submitted issue #574 as draft PR #578 (verify GitHub)")
         self.assertEqual(runner.safe_queue_outcome(
-            b"Queue paused for review of previous task\\n"), "paused for prior review")
+            b"Queue paused for review of previous task\n"), "paused for prior review")
         self.assertEqual(runner.safe_queue_outcome(
-            b"No approved unprocessed tasks\\n"), "no eligible task")
-        for bad in (b"private-secret=SECRET_VALUE\\n",
-                    b"Submitted issue #574 as draft PR #578\\n"
-                    b"No approved unprocessed tasks\\n",
-                    b"Submitted issue #574 as draft PR #578\\n"
-                    b"Submitted issue #574 as draft PR #578\\n",
-                    b"Submitted issue #574 as draft PR #not_a_number\\n",
-                    b"Submitted issue #574 as draft PR #578 extra\\n",
+            b"No approved unprocessed tasks\n"), "no eligible task")
+        for bad in (b"private-secret=SECRET_VALUE\n",
+                    b"Submitted issue #574 as draft PR #578\n"
+                    b"No approved unprocessed tasks\n",
+                    b"Submitted issue #574 as draft PR #578\n"
+                    b"Submitted issue #574 as draft PR #578\n",
+                    b"Submitted issue #574 as draft PR #not_a_number\n",
+                    b"Submitted issue #574 as draft PR #578 extra\n",
                     b"x" * 4097):
             self.assertEqual(runner.safe_queue_outcome(bad),
                              "unknown (inspect durable ledger)")
@@ -392,9 +392,9 @@ class RestrictedJobs(unittest.TestCase):
             def fake_popen(_command, **kwargs):
                 # Deliberately include >4KB of preceding ledger lines to
                 # prove the wrapper captures only the final bounded tail.
-                kwargs["stdout"].write(b"Sensitive earlier response TOKEN_X\\n" +
-                    b"Worker queue #500: submitted\\n" * 250 +
-                    b"Submitted issue #574 as draft PR #578\\n")
+                kwargs["stdout"].write(b"Sensitive earlier response TOKEN_X\n" +
+                    b"Worker queue #500: submitted\n" * 250 +
+                    b"Submitted issue #574 as draft PR #578\n")
                 process = MagicMock()
                 process.wait.return_value = 0
                 return process
@@ -420,7 +420,7 @@ class RestrictedJobs(unittest.TestCase):
             job = Path(folder) / "job.json"
             job.write_text(json.dumps(self.job("queue_once")))
             def fake_popen(_command, **kwargs):
-                kwargs["stdout"].write(b"No approved unprocessed tasks\\n")
+                kwargs["stdout"].write(b"No approved unprocessed tasks\n")
                 process = MagicMock()
                 process.wait.return_value = 0
                 return process
