@@ -330,5 +330,44 @@ class DraftPublisher(unittest.TestCase):
             with self.assertRaises(publisher.PublishError):
                 publisher.queued_branch_suffix(issue, sha)
 
+
+    def test_queued_duplicate_branch_cannot_create_second_pr(self):
+        (self.root / "README.md").write_text("Changed\n")
+        refs = []
+        outcomes = []
+        for existing in (False, True):
+            calls = []
+            def request(token, method, endpoint, payload=None):
+                calls.append((method, endpoint, payload))
+                if endpoint == "/git/ref/heads/main":
+                    return {"object": {"sha": self.sha}}
+                if endpoint == "/git/commits/" + self.sha:
+                    return {"tree": {"sha": "base-tree"}}
+                if endpoint == "/git/blobs":
+                    return {"sha": "blob-sha"}
+                if endpoint == "/git/trees":
+                    return {"sha": "new-tree"}
+                if endpoint == "/git/commits":
+                    return {"sha": "new-commit"}
+                if endpoint == "/git/refs":
+                    refs.append(payload["ref"])
+                    if existing:
+                        raise publisher.PublishError("GitHub API refused operation (HTTP 422)")
+                    return {}
+                if endpoint == "/pulls":
+                    return {"draft": True, "number": 600}
+                self.fail("Unexpected remote operation")
+            with patch.dict(os.environ, {"WORKER_ISSUE_NUMBER": "550"}):
+                if existing:
+                    with self.assertRaises(publisher.PublishError):
+                        publisher.publish(self.root, "dummy", request)
+                else:
+                    self.assertEqual(publisher.publish(self.root, "dummy", request), 600)
+            outcomes.append(calls)
+        self.assertEqual(refs, ["refs/heads/worker/review-" +
+                               publisher.queued_branch_suffix("550", self.sha)] * 2)
+        self.assertFalse(any(endpoint == "/pulls" for _, endpoint, _ in outcomes[1]),
+                         "Existing ambiguous branch must never create duplicate PR")
+
 if __name__ == "__main__":
     unittest.main()
