@@ -738,7 +738,7 @@ def retire_failed_two_file_service_task(path=LEDGER, fetch=github_read):
     except (TypeError, ValueError):
         task = {}
     labels = issue.get("labels")
-    expected = "test/offline-event-two-file-service.test.mjs"
+    expected = ["public/today.js", "test/today-logic.test.mjs"]
     if (issue.get("number") != 531 or issue.get("state") != "open"
             or (issue.get("user") or {}).get("login", "").lower() != "wood468"
             or issue.get("title") != "[GO-WORKER] v0.5.16 disposable two-file Today source/test acceptance pilot"
