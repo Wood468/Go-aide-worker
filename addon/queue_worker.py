@@ -79,6 +79,22 @@ EDITOR_FAILURES = {
 EDITOR_CATEGORIES = frozenset(EDITOR_FAILURES.values()) | {"unknown", "timeout"}
 
 
+# Publisher output is always converted into a fixed, allowlisted status.
+# No child stdout, remote response, credentials or model text enter the ledger.
+PUBLISH_CATEGORIES = frozenset({
+    "missing-token", "stale-main", "github-unavailable",
+    "approval-changed", "scope", "task-contract", "confirmation",
+    "github-permission", "github-conflict", "github-rate-limit",
+    "github-service", "github-api", "unknown",
+})
+
+
+class PublisherChildError(QueueError):
+    def __init__(self, category):
+        self.category = category if category in PUBLISH_CATEGORIES else "unknown"
+        super().__init__("Restricted publisher failed")
+
+
 class EditorChildError(QueueError):
     def __init__(self, category):
         if category not in EDITOR_CATEGORIES:
@@ -223,6 +239,15 @@ def child_run(command, env):
             # is untrusted and reduced to 'unknown'; nothing raw is logged.
             category = EDITOR_FAILURES.get(result.stdout.strip(), "unknown")
             raise EditorChildError(category)
+        if command[1:2] == ["/opt/worker/publisher.py"]:
+            # Publisher itself emits a single fixed marker. Never parse or
+            # expose arbitrary stdout, API response text or exception details.
+            marker = result.stdout.strip()
+            prefix = b"WORKER_PUBLISH_DIAGNOSTIC:"
+            category = marker[len(prefix):].decode("ascii", "ignore") if marker.startswith(prefix) else ""
+            if marker != prefix + category.encode("ascii") or category not in PUBLISH_CATEGORIES:
+                category = "unknown"
+            raise PublisherChildError(category)
         raise QueueError("Worker child failed")
     return result.stdout[:500]
 
@@ -265,10 +290,12 @@ def ledger_summary(path=LEDGER):
                          "publish"}:
             stage = None
         category = entry.get("failure_category") if isinstance(entry, dict) else None
-        if category not in EDITOR_CATEGORIES:
+        valid = (EDITOR_CATEGORIES if stage in {"edit-single", "edit-source", "edit-test"}
+                 else PUBLISH_CATEGORIES if stage == "publish" else frozenset())
+        if category not in valid:
             category = None
         detail = "stage: " + stage if stage else ""
-        if status == "needs-review" and category and stage in {"edit-single", "edit-source", "edit-test"}:
+        if status == "needs-review" and category:
             detail += "; category: " + category
         print("Worker queue #" + str(key) + ": " + status +
               (" (" + detail + ")" if status == "needs-review" and detail else ""),
@@ -784,6 +811,117 @@ def retire_failed_two_file_service_task(path=LEDGER, fetch=github_read):
 
 
 
+def retire_failed_places_publish_task(path=LEDGER, fetch=github_read):
+    """One-way reconciliation for deapproved #550; no execution or retry.
+
+    Require exhaustive bounded post-issue PR history and inspect all live
+    worker/review branches for an ambiguous unpublished Places modification.
+    Nothing changes if any evidence is missing or contradictory.
+    """
+    state = read_ledger(path)
+    record = state.get("550")
+    if (not isinstance(record, dict)
+            or record != {"state": "needs-review", "attempts": 1,
+                          "failure_stage": "publish"}):
+        raise QueueError("Places publish task retirement is not eligible")
+
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/550")
+    if not isinstance(issue, dict):
+        raise QueueError("Places task issue unavailable")
+    body = issue.get("body")
+    parts = TASK_RE.findall(body) if isinstance(body, str) else []
+    try:
+        task = json.loads(parts[0]) if len(parts) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    labels = issue.get("labels")
+    if (issue.get("number") != 550 or issue.get("state") != "open"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or issue.get("title") != "[GO-WORKER] Reject impossible Places event and provenance calendar dates"
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)
+            or set(task) != {"path", "instruction"}
+            or task.get("path") != "test/places.test.mjs"
+            or not isinstance(task.get("instruction"), str)
+            or not task["instruction"].strip()):
+        raise QueueError("Places task identity, approval or contract changed")
+
+    iso = r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z"
+    created = issue.get("created_at")
+    if not isinstance(created, str) or not re.fullmatch(iso, created):
+        raise QueueError("Places task issue timestamp unavailable")
+
+    history_complete = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Invalid Places PR history")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Malformed Places PR history")
+            timestamp = pr.get("created_at")
+            if not isinstance(timestamp, str) or not re.fullmatch(iso, timestamp):
+                raise QueueError("Places PR timestamp unavailable")
+            if timestamp < created:
+                history_complete = True
+                break
+            if ("Worker: issue #550" in str(pr.get("title") or "")
+                    or "Source task: #550" in str(pr.get("body") or "")):
+                raise QueueError("Places task may already have a published PR")
+        if history_complete or len(prs) < 5:
+            history_complete = True
+            break
+    if not history_complete:
+        raise QueueError("Cannot verify complete Places PR history")
+
+    # Older random worker/review-* names predate deterministic task branches.
+    # Every currently live worker branch must therefore be inspected, not just
+    # the newer task-specific branch name.
+    branches_complete = False
+    examined = set()
+    for page in range(1, 11):
+        branches = fetch("https://api.github.com/repos/" + REPO +
+                         "/branches?per_page=100&page=" + str(page))
+        if not isinstance(branches, list) or len(branches) > 100:
+            raise QueueError("Invalid Places branch inventory")
+        for branch in branches:
+            if not isinstance(branch, dict):
+                raise QueueError("Malformed Places branch inventory")
+            name = branch.get("name")
+            sha = (branch.get("commit") or {}).get("sha")
+            if not isinstance(name, str) or not isinstance(sha, str):
+                raise QueueError("Incomplete Places branch inventory")
+            if name.startswith("worker/review-"):
+                if not re.fullmatch(r"worker/review-[a-f0-9]{12}", name) or not re.fullmatch(r"[a-f0-9]{40}", sha):
+                    raise QueueError("Unknown worker branch identity")
+                if sha in examined:
+                    continue
+                examined.add(sha)
+                commit = fetch("https://api.github.com/repos/" + REPO + "/commits/" + sha)
+                if not isinstance(commit, dict) or not isinstance(commit.get("files"), list):
+                    raise QueueError("Worker branch diff unavailable")
+                if any(not isinstance(item, dict) or not isinstance(item.get("filename"), str)
+                       for item in commit["files"]):
+                    raise QueueError("Worker branch diff invalid")
+                if any(item["filename"] == "test/places.test.mjs" for item in commit["files"]):
+                    raise QueueError("Possible unpublished Places worker branch")
+        if len(branches) < 100:
+            branches_complete = True
+            break
+    if not branches_complete:
+        raise QueueError("Cannot verify complete worker branch inventory")
+
+    state["550"] = {"state": "retired", "attempts": 1,
+                    "reason": "reconciled-failed-places-publish"}
+    save_ledger(state, path)
+    print("Failed Places publish task #550 retired without retry or PR", flush=True)
+    return True
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -892,7 +1030,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
         # child output or credentials ever reach this durable ledger.
         failure = {"state": "needs-review", "attempts": attempts,
                    "failure_stage": stage}
-        if isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"}:
+        if ((isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"})
+                or (isinstance(exc, PublisherChildError) and stage == "publish")):
             failure["failure_category"] = exc.category
         state[key] = failure
         save_ledger(state)
@@ -935,7 +1074,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -972,6 +1111,8 @@ def main():
             retire_failed_banner_cache_task()
         elif mode == "retire_two_file_service_task":
             retire_failed_two_file_service_task()
+        elif mode == "retire_places_publish_task":
+            retire_failed_places_publish_task()
         else:
             once(scan=(mode == "scan"))
 
