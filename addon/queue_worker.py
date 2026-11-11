@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 import time
+import signal
+import threading
 import urllib.error
 import urllib.request
 
@@ -36,6 +38,8 @@ class QueueError(Exception):
 # The queue never logs its GitHub payloads, paths, prompts or credentials.
 PRECLAIM_ERRORS = {
     "GitHub read rate limit reached": "github-rate-limit",
+    "GitHub authentication required": "github-auth",
+    "GitHub read unauthorized": "github-auth",
     "Queue request unavailable": "github-unavailable",
     "Queue response exceeds limit": "github-response-size",
     "Invalid issue list": "issue-list-invalid",
@@ -108,8 +112,21 @@ def github_read(url, opener=urllib.request.urlopen):
     if (not url.startswith("https://api.github.com/repos/" + REPO + "/")
             or any(ch in url for ch in ("\r", "\n", "#"))):
         raise QueueError("Disallowed GitHub read")
-    req = urllib.request.Request(url, headers={
-        "Accept": "application/vnd.github+json", "User-Agent": "go-aider-task-queue"})
+    # Queue and publisher share the already configured repo-scoped token,
+    # but Gemini editor children never receive it. Authenticated API reads
+    # avoid the 60/hour anonymous limit during unattended 10-minute polling.
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not isinstance(token, str) or len(token) > 2048 or any(c in token for c in ("\r", "\n")):
+        raise QueueError("Queue request unavailable")
+    token = token.strip()
+    if os.environ.get("ENABLE_QUEUE") == "true" and not token:
+        raise QueueError("GitHub authentication required")
+    headers = {"Accept": "application/vnd.github+json",
+               "User-Agent": "go-aider-task-queue",
+               "X-GitHub-Api-Version": "2022-11-28"}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, headers=headers)
     try:
         with opener(req, timeout=25) as response:
             raw = response.read(180_001)
@@ -122,6 +139,8 @@ def github_read(url, opener=urllib.request.urlopen):
         remaining = exc.headers.get("X-RateLimit-Remaining") if exc.headers else None
         if exc.code == 429 or (exc.code == 403 and remaining == "0"):
             raise QueueError("GitHub read rate limit reached") from None
+        if exc.code in (401, 403) and token:
+            raise QueueError("GitHub read unauthorized") from None
         raise QueueError("Queue request unavailable") from None
     except (urllib.error.URLError, OSError, TimeoutError, ValueError):
         raise QueueError("Queue request unavailable") from None
@@ -1274,12 +1293,23 @@ def main():
             raise QueueError("Another queue worker holds the lock") from None
         if mode == "loop":
             print("Approved queue active: legacy single-file tasks only; one draft PR at a time", flush=True)
-            while True:
-                try:
-                    once(unattended=True)
-                except (QueueError, OSError, ValueError):
-                    print("Queue iteration failed; task held for review", flush=True)
-                time.sleep(600)
+            shutdown = threading.Event()
+            previous_handler = signal.getsignal(signal.SIGTERM)
+            def request_shutdown(_signum, _frame):
+                # No model or GitHub work in the signal handler. Drain any
+                # active bounded iteration, then exit. Idle waits wake at once.
+                shutdown.set()
+            signal.signal(signal.SIGTERM, request_shutdown)
+            try:
+                while not shutdown.is_set():
+                    try:
+                        once(unattended=True)
+                    except (QueueError, OSError, ValueError):
+                        print("Queue iteration failed; task held for review", flush=True)
+                    shutdown.wait(600)
+            finally:
+                signal.signal(signal.SIGTERM, previous_handler)
+            print("Approved queue stopped cleanly", flush=True)
         elif mode == "status":
             ledger_summary()
         elif mode == "recover_pilot":
