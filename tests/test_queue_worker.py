@@ -962,11 +962,11 @@ class WorkerQueueTests(unittest.TestCase):
     def test_editor_child_failure_categories_are_exact_and_never_leak_output(self):
         editor_command=[sys.executable, "/opt/worker/direct_editor.py"]
         cases={
-            b"Direct Gemini edit rejected: Gemini request rejected: quota\\n": "quota",
-            b"Direct Gemini edit rejected: Gemini connection or response error\\n": "network",
-            b"Direct Gemini edit rejected: Model returned invalid structured edit\\n": "format",
-            b"Direct Gemini edit rejected: No content change produced\\n": "no-change",
-            b"Direct Gemini edit rejected: arbitrary model text / SECRET\\n": "unknown",
+            b"Direct Gemini edit rejected: Gemini request rejected: quota\n": "quota",
+            b"Direct Gemini edit rejected: Gemini connection or response error\n": "network",
+            b"Direct Gemini edit rejected: Model returned invalid structured edit\n": "format",
+            b"Direct Gemini edit rejected: No content change produced\n": "no-change",
+            b"Direct Gemini edit rejected: arbitrary model text / SECRET\n": "unknown",
         }
         for message, expected in cases.items():
             with self.subTest(category=expected):
