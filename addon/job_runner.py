@@ -157,6 +157,31 @@ def classify_edit_output(raw):
     return "no-recognised-provider-error"
 
 
+# Queue-worker output is untrusted by default. A single known static failure
+# marker may be presented; no API/model text can leave the private tempfile.
+SAFE_QUEUE_DIAGNOSTICS = frozenset({
+    "github-rate-limit", "github-unavailable", "github-response-size",
+    "issue-list-invalid", "ledger-invalid", "queue-locked",
+    "github-url-rejected", "other",
+})
+
+
+def safe_queue_diagnostic(raw):
+    if not isinstance(raw, bytes) or len(raw) > 4096:
+        return None
+    matches = []
+    for line in raw.splitlines():
+        if line.startswith(b"WORKER_QUEUE_DIAGNOSTIC:"):
+            try:
+                category = line.partition(b":")[2].decode("ascii")
+            except UnicodeError:
+                return None
+            if category not in SAFE_QUEUE_DIAGNOSTICS:
+                return None
+            matches.append(category)
+    return matches[0] if len(matches) == 1 else None
+
+
 def count_changes(workspace):
     """Return only a count of dirty paths, never filenames or contents."""
     environment = {"PATH": "/usr/bin:/bin", "HOME": "/home/coder",
@@ -218,7 +243,7 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
         process = subprocess.Popen(
             cmd, cwd=workspace.parent if action == "prepare" else workspace,
             stdin=subprocess.DEVNULL,
-            stdout=private_output if action in {"edit", "direct_edit"} else subprocess.DEVNULL,
+            stdout=private_output if action in {"edit", "direct_edit", "queue_once"} else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if action == "edit" else subprocess.DEVNULL,
             start_new_session=True,
             env=env,
@@ -232,6 +257,11 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
                 pass
             process.wait()
             raise JobError("Job timed out") from exc
+        if action == "queue_once" and return_code:
+            private_output.seek(0)
+            category = safe_queue_diagnostic(private_output.read(4097))
+            if category is not None:
+                print("GO Aider queue diagnostic: " + category, flush=True)
         if action == "edit":
             private_output.seek(0)
             category = classify_edit_output(private_output.read(200_000))

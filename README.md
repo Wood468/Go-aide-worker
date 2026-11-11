@@ -8,6 +8,16 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.16: safe diagnostics for pre-claim queue failures
+
+The second controlled four-file acceptance task [#528](https://github.com/Wood468/crispy-barnacle/issues/528) exited with code 2 before creating any draft PR **or even a ledger entry**. This means there is no evidence that source editing or Gemini was reached. A new one-way, fixed-category output mechanism distinguishes issues with the public GitHub read path, API quota, invalid issue list or ledger, and concurrent queue locks. The subprocess's output is held privately by the job runner, and only a single exact allowlisted `WORKER_QUEUE_DIAGNOSTIC:<category>` marker can reach Home Assistant logs. Arbitrary output, prompts, API payloads, exception contents, and credentials are not logged.
+
+The ten-minute unattended loop also now skips expensive historical submitted-PR API reads entirely when there are zero approved open tasks, reducing unauthenticated public GitHub API quota usage without ever dispatching additional work. Submitted/failed ledger records are preserved and reviewed whenever a new eligible task appears.
+
+This update changes neither GitHub credentials distribution nor worker editing permissions, owner/path validation, retries, automatic merge, or source/test/cache scope. It adds offline safety tests for rate-limit handling, exact category mapping and sanitised parent log behaviour.
+
+Rollout: require latest-head static+Docker CI, inspect full security/diff scope, merge, and install v0.5.16 idle/off. Preserve issue #528 as deapproved and never retry blindly. Run a separately reviewed, new controlled pilot only after reviewing the preclaim diagnostic and open PR/file conflict state. If GitHub reports rate limiting, prefer lower polling/fewer read calls over unreviewed changes to GitHub-token exposure.
+
 ## v0.5.15: controlled single-file error categorisation and task retirement
 
 Live unattended single-file task #516 stopped at `edit-single` with no draft PR. Its exact failure was unknowable because the restricted editor child correctly discarded untrusted output. Version 0.5.15 diagnoses subsequent failures **only** from the editor's exact predefined, known-safe status line; the queue maps that line to a fixed category (`quota`, `auth`, `model`, `service`, `network`, `response-size`, `format`, `no-change`, `anchor`, `safety`, `timeout` or `unknown`). Any unrecognised response, stderr, exception text, filename, token or model output is discarded. A finite category is recorded alongside the existing stage and visible via `queue_status`; there is **no** live token/model response logging or hidden automatic retry. A failed task continues to block all dispatch until review.

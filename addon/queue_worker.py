@@ -32,6 +32,28 @@ SOURCE_TEST_PAIRS = {
 class QueueError(Exception):
     pass
 
+# These are pre-approved diagnostic labels, not exception or model output.
+# The queue never logs its GitHub payloads, paths, prompts or credentials.
+PRECLAIM_ERRORS = {
+    "GitHub read rate limit reached": "github-rate-limit",
+    "Queue request unavailable": "github-unavailable",
+    "Queue response exceeds limit": "github-response-size",
+    "Invalid issue list": "issue-list-invalid",
+    "Invalid ledger object": "ledger-invalid",
+    "Unsafe ledger link": "ledger-invalid",
+    "Unsafe queue ledger": "ledger-invalid",
+    "Another queue worker holds the lock": "queue-locked",
+    "Disallowed GitHub read": "github-url-rejected",
+}
+SAFE_PRECLAIM_CATEGORIES = frozenset(PRECLAIM_ERRORS.values()) | {"other"}
+
+
+def safe_preclaim_category(exc):
+    if not isinstance(exc, QueueError):
+        return "other"
+    return PRECLAIM_ERRORS.get(str(exc), "other")
+
+
 # Only controlled direct-editor messages can become status categories. Never
 # copy raw model responses, subprocess output, exception details or credentials.
 EDITOR_FAILURES = {
@@ -78,8 +100,14 @@ def github_read(url, opener=urllib.request.urlopen):
         if len(raw) > 180_000:
             raise QueueError("Queue response exceeds limit")
         return json.loads(raw)
-    except (urllib.error.HTTPError, urllib.error.URLError,
-            OSError, TimeoutError, ValueError):
+    except urllib.error.HTTPError as exc:
+        # No remote content, URL or headers are logged. Distinguish only the
+        # server's public quota signal to avoid speculative model retries.
+        remaining = exc.headers.get("X-RateLimit-Remaining") if exc.headers else None
+        if exc.code == 429 or (exc.code == 403 and remaining == "0"):
+            raise QueueError("GitHub read rate limit reached") from None
+        raise QueueError("Queue request unavailable") from None
+    except (urllib.error.URLError, OSError, TimeoutError, ValueError):
         raise QueueError("Queue request unavailable") from None
 
 
@@ -821,6 +849,17 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
         waiting = sum(approved_for_dispatch(t, state) for t in tasks)
         print("Approved queued tasks: " + str(waiting) + "; no edits", flush=True)
         return waiting
+    if not tasks:
+        # With no approved tasks there is nothing to dispatch. Avoid probing
+        # every historical submitted PR on each ten-minute idle poll: those
+        # unauthenticated public GitHub reads consume scarce API quota.
+        if any(isinstance(entry, dict) and
+               entry.get("state") in {"started", "needs-review"}
+               for entry in state.values()):
+            print("Queue paused for review of previous task", flush=True)
+        else:
+            print("No approved unprocessed tasks", flush=True)
+        return 0
     if has_pending_review(state, fetch):
         print("Queue paused for review of previous task", flush=True)
         return 0
@@ -875,6 +914,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (QueueError, OSError, ValueError):
-        print("Worker queue rejected job safely", file=sys.stderr)
+    except (QueueError, OSError, ValueError) as exc:
+        # The parent may render ONLY this static marker; never print exc.
+        print("WORKER_QUEUE_DIAGNOSTIC:" + safe_preclaim_category(exc), flush=True)
         sys.exit(2)
