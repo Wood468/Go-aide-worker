@@ -849,6 +849,17 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
         waiting = sum(approved_for_dispatch(t, state) for t in tasks)
         print("Approved queued tasks: " + str(waiting) + "; no edits", flush=True)
         return waiting
+    if not tasks:
+        # With no approved tasks there is nothing to dispatch. Avoid probing
+        # every historical submitted PR on each ten-minute idle poll: those
+        # unauthenticated public GitHub reads consume scarce API quota.
+        if any(isinstance(entry, dict) and
+               entry.get("state") in {"started", "needs-review"}
+               for entry in state.values()):
+            print("Queue paused for review of previous task", flush=True)
+        else:
+            print("No approved unprocessed tasks", flush=True)
+        return 0
     if has_pending_review(state, fetch):
         print("Queue paused for review of previous task", flush=True)
         return 0
