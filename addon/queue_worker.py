@@ -163,7 +163,7 @@ def ledger_summary(path=LEDGER):
     state = read_ledger(path)
     for key, entry in sorted(state.items()):
         status = entry.get("state", "invalid") if isinstance(entry, dict) else "invalid"
-        if status not in {"started", "needs-review", "submitted", "approved-pilot-retry"}:
+        if status not in {"started", "needs-review", "submitted", "approved-pilot-retry", "retired"}:
             status = "invalid"
         print("Worker queue #" + str(key) + ": " + status, flush=True)
     if not state:
@@ -273,6 +273,94 @@ def acknowledge_merged_code_pilot(path=LEDGER, fetch=github_read):
     return True
 
 
+
+def retire_exhausted_artwork_task(path=LEDGER, fetch=github_read):
+    """One-way review acknowledgement of exhausted #472, never another retry.
+
+    Require the recorded second failed attempt, withdrawn approval, reviewed
+    merged fallback PR #488, and complete post-issue worker-PR history.
+    Leave every other task record unchanged. No Gemini or GitHub writes.
+    """
+    state = read_ledger(path)
+    previous = state.get("472")
+    if (not isinstance(previous, dict) or previous.get("state") != "needs-review"
+            or previous.get("attempts") != 2 or "pr" in previous):
+        raise QueueError("Exhausted artwork acknowledgement not eligible")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/472")
+    if not isinstance(issue, dict):
+        raise QueueError("Artwork issue unavailable")
+    task_line = TASK_RE.findall(issue.get("body", "") or "")
+    try:
+        task = json.loads(task_line[0]) if len(task_line) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    labels = issue.get("labels")
+    if (issue.get("number") != 472 or issue.get("state") != "open"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or not str(issue.get("title", "")).startswith("[GO-WORKER] ")
+            or task.get("path") != "test/variant-art.test.mjs"
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)):
+        raise QueueError("Artwork issue or approval state changed")
+
+    pr = fetch("https://api.github.com/repos/" + REPO + "/pulls/488")
+    if not isinstance(pr, dict):
+        raise QueueError("Fallback PR unavailable")
+    merged_sha = pr.get("merge_commit_sha")
+    if (pr.get("number") != 488 or pr.get("state") != "closed"
+            or pr.get("merged") is not True or not pr.get("merged_at")
+            or (pr.get("merged_by") or {}).get("login", "").lower() != "wood468"
+            or "Crowned and Roaming" not in str(pr.get("title", ""))
+            or "#472" not in str(pr.get("body", ""))
+            or (pr.get("base") or {}).get("ref") != "main"
+            or not isinstance(merged_sha, str)
+            or not re.fullmatch(r"[0-9a-f]{40}", merged_sha)):
+        raise QueueError("Fallback PR has not been verified")
+    files = fetch("https://api.github.com/repos/" + REPO +
+                  "/pulls/488/files?per_page=100")
+    if (not isinstance(files, list) or len(files) != 1
+            or not isinstance(files[0], dict)
+            or files[0].get("filename") != "test/variant-art.test.mjs"
+            or files[0].get("status") != "modified"):
+        raise QueueError("Fallback PR file scope changed")
+
+    issued = issue.get("created_at")
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
+        raise QueueError("Artwork issue creation time unavailable")
+    complete = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Incomplete artwork PR history")
+        for candidate in prs:
+            if not isinstance(candidate, dict):
+                raise QueueError("Malformed artwork PR history")
+            created = candidate.get("created_at")
+            if not isinstance(created, str) or not re.fullmatch(iso_utc, created):
+                raise QueueError("Artwork PR creation time unavailable")
+            if created < issued:
+                complete = True
+                break
+            if ("Worker: issue #472" in str(candidate.get("title") or "")
+                    or "Source task: #472" in str(candidate.get("body") or "")):
+                raise QueueError("An artwork worker PR may already exist")
+        if complete or len(prs) < 5:
+            complete = True
+            break
+    if not complete:
+        raise QueueError("Cannot verify full artwork PR history")
+
+    state["472"] = {"state": "retired", "attempts": 2, "resolution_pr": 488}
+    save_ledger(state, path)
+    print("Exhausted issue #472 retired after verified fallback PR #488; no retry", flush=True)
+    return True
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -364,7 +452,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -389,6 +477,8 @@ def main():
             recover_pilot(pilot_issue=472)
         elif mode == "ack_code_pilot":
             acknowledge_merged_code_pilot()
+        elif mode == "retire_artwork_task":
+            retire_exhausted_artwork_task()
         else:
             once(scan=(mode == "scan"))
 
