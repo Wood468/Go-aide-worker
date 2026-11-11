@@ -8,6 +8,14 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.5: bounded larger-file Gemini edits (40–100 KB, experimental)
+
+The direct editor can propose changes to existing UTF-8 files up to **100,000 bytes**, matching the current draft-PR publisher's per-file cap. Files up to 40 KB retain the original complete-file JSON response. For larger files, Gemini must return **1–3 exact-match `old`/`new` replacement blocks** rather than replacing the whole file. Each original block must occur exactly once, blocks may not overlap, individual blocks are capped at 12,000 characters, and their combined old/new text at 24,000 characters. The worker applies replacements against fixed original offsets and preserves all untouched text; it rejects ambiguous, malformed, oversized, no-op or unsafe output before atomic write. Output remains capped at 100 KB and the publisher still independently checks content, paths, current main and draft-PR restrictions.
+
+This change does **not** expand queue path permissions: approved unattended tasks still create exactly one `docs/worker-task-*.md` file or edit exactly one existing flat `test/*.test.mjs` file. It also does not enable automatic retries, multi-file app-source edits, model-executed tests, merges or deployments. Large files are sent as context to Gemini, so quota/latency may vary; a failed proposal must be reviewed and never automatically retried.
+
+**Rollout gate:** review this release's security tests and PR diff, resolve the separately tracked failed task #472 / recovery issue #24, and only then deliberately update the Home Assistant add-on and pilot one approved >40 KB test-file task with editing/publishing limited to a single `queue_once` run. Keep Idle, queue/edit/publish OFF otherwise. The existing multi-file source+test proposal remains tracked in issue #23.
+
 ## v0.5.4: one reviewed recovery for artwork test #472
 
 This version introduces a **single explicitly approved recovery action** for a failed, owner-approved #472 test-only task targeting existing `test/variant-art.test.mjs`. It reuses the exhaustive bounded post-issue GitHub PR history audit, issue author/label/path checks, and strictly enforced one-retry ceiling from the original pilots. **No general ledger reset exists.** It cannot run if the prior entry is not exactly the first `needs-review` attempt, if any matching draft PR exists, or if approval changed.
