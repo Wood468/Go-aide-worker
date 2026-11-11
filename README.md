@@ -8,6 +8,14 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.10: one-way retirement of failed two-file acceptance task #497
+
+The first reviewed v0.5.8 two-file acceptance task #497 failed with exit code 2 before any confirmed draft PR. Its approval label is removed. Following v0.5.9's independently successful *manual* edits of both 20 KB Today source and the related test, the durable ledger still correctly holds `#497: needs-review`. This release adds **exactly one** credential-free `queue_retire_two_file_pilot` action, which can transition **only** #497's first failed attempt to `retired`, never to a retryable state.
+
+The one-time action requires queue opt-in `enable_queue:true` with editing and publishing OFF. It checks #497's owner, exact title and versioned source/test paths, withdrawn approval, durable ledger first attempt, and complete bounded post-issue GitHub PR history showing no #497 worker draft. Any missing data or matching PR refuses the transition. Other queue records are preserved. It creates no PR, edits no file, and has no Gemini/GitHub token access.
+
+**Rollout:** review complete worker diff and latest-head static/Docker CI; install and keep Idle/off. Explicitly run only `queue_retire_two_file_pilot`, inspect `queue_status` for `#497: retired` and all prior records unchanged, restore Idle/off. A future two-file pilot must use a *new owner-approved issue*, never #497. Do not enable unattended `queue_loop` until that new pilot produces a reviewed draft PR with app CI.
+
 ## v0.5.9: reliable medium-file patch response (pilot feedback)
 
 A guarded v0.5.8 two-file acceptance task #497 failed on its **first** run (no confirmed draft PR), and a separate manual `direct_edit` of the ~20 KB `public/today.js` file reproduced exit code 2 with no GitHub publication. Previously a ~51 KB exact-patch manual edit had succeeded. The editor now selects its bounded unique-anchor replacement protocol for files **above 12 KB** (previously above 40 KB), avoiding a large full-file response for medium-sized source and test files. The same 1–3 replacement, unique anchor, 24,000-character touch, 100 KB final-size and secret checks remain. Offline regressions cover this medium-sized boundary.
