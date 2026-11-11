@@ -142,7 +142,10 @@ def edit(workspace, selected, prompt, key, generator=generate):
     if not target.is_file() or target.stat().st_size > MAX_FILE_BYTES:
         raise DirectEditError("Selected file is invalid or oversized")
     try:
-        original = target.read_text(encoding="utf-8")
+        # Keep CRLF exactly as checked out. Path.read_text() normalises newlines
+        # and would otherwise rewrite unrelated bytes in a large-file patch.
+        with target.open("r", encoding="utf-8", newline="") as source:
+            original = source.read()
     except UnicodeError:
         raise DirectEditError("Only UTF-8 text files are supported") from None
     updated = generator(key, prompt, relative, original)
