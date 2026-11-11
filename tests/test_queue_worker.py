@@ -1084,6 +1084,20 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertNotIn("GITHUB_TOKEN",output)
 
 
+    def test_idle_queue_without_approved_issues_never_reads_old_pr_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/"ledger.json"
+            q.save_ledger({"514":{"state":"submitted","pr":515},
+                           "519":{"state":"submitted","pr":522}},ledger)
+            seen=[]
+            def only_issues(url):
+                seen.append(url)
+                self.assertEqual(url,q.ISSUES_URL)
+                return []
+            self.assertEqual(q.once(fetch=only_issues,ledger_path=ledger,unattended=True),0)
+            self.assertEqual(seen,[q.ISSUES_URL])
+            self.assertEqual(q.read_ledger(ledger)["519"]["state"],"submitted")
+
     def test_queue_preclaim_diagnostics_never_emit_exception_details(self):
         examples={
             "GitHub read rate limit reached":"github-rate-limit",
