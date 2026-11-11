@@ -958,4 +958,129 @@ class WorkerQueueTests(unittest.TestCase):
                                         unattended=False),1)
             self.assertEqual(invoked,[10,8])
 
+
+    def test_editor_child_failure_categories_are_exact_and_never_leak_output(self):
+        editor_command=[sys.executable, "/opt/worker/direct_editor.py"]
+        cases={
+            b"Direct Gemini edit rejected: Gemini request rejected: quota\n": "quota",
+            b"Direct Gemini edit rejected: Gemini connection or response error\n": "network",
+            b"Direct Gemini edit rejected: Model returned invalid structured edit\n": "format",
+            b"Direct Gemini edit rejected: No content change produced\n": "no-change",
+            b"Direct Gemini edit rejected: arbitrary model text / SECRET\n": "unknown",
+        }
+        for message, expected in cases.items():
+            with self.subTest(category=expected):
+                result=type("Result",(),{"returncode":2, "stdout":message})()
+                with patch.object(q.subprocess,"run",return_value=result):
+                    with self.assertRaises(q.EditorChildError) as cm:
+                        q.child_run(editor_command,q.child_env())
+                    self.assertEqual(cm.exception.category,expected)
+                    self.assertNotIn("SECRET",str(cm.exception))
+        with patch.object(q.subprocess,"run",return_value=
+                          type("Result",(),{"returncode":2,
+                          "stdout":b"Direct Gemini edit rejected: Gemini request rejected: quota"})()):
+            with self.assertRaises(q.QueueError) as cm:
+                q.child_run([sys.executable, "/opt/worker/publisher.py"],q.child_env())
+            self.assertNotIsInstance(cm.exception,q.EditorChildError)
+
+    def test_editor_category_persisted_only_after_verified_edit_child_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            target=root/"source/test/offline-event-banner-cache.test.mjs"
+            target.parent.mkdir(parents=True)
+            target.write_text("import test from 'node:test';\\n")
+            def runner(command, env):
+                if command[1] == "/opt/worker/refresh_repo.py":
+                    return b""
+                if command[1] == "/opt/worker/direct_editor.py":
+                    raise q.EditorChildError("quota")
+                self.fail("Unexpected subprocess")
+            original=q.save_ledger
+            state={}
+            with (patch.object(q,"ROOT",root),
+                  patch.object(q,"CHECKOUT",root/"source"),
+                  patch.object(q,"save_ledger",
+                     side_effect=lambda value: original(value,root/"ledger.json")),
+                  patch.dict(os.environ,{"GEMINI_API_KEY":"dummy",
+                                         "GITHUB_TOKEN":"dummy"})):
+                task=q.parse_task(issue(number=516,path="test/offline-event-banner-cache.test.mjs"))
+                with self.assertRaises(q.EditorChildError):
+                    q.perform(task,state,runner=runner)
+            self.assertEqual(state["516"],{"state":"needs-review","attempts":1,
+                       "failure_stage":"edit-single","failure_category":"quota"})
+            self.assertFalse(q.approved_for_dispatch(task,state))
+
+    def test_banner_cache_retirement_is_exact_and_nonretryable(self):
+        record=issue(number=516,path="test/offline-event-banner-cache.test.mjs")
+        record["title"]="[GO-WORKER] Test banner cache bypasses insecure and non-image requests"
+        record["labels"]=[]
+        def scenario(change=None, ledger_override=None):
+            original={"state":"needs-review","attempts":1,
+                      "failure_stage":"edit-single"}
+            ledger_initial=ledger_override if ledger_override is not None else original
+            with tempfile.TemporaryDirectory() as folder:
+                ledger=Path(folder)/"ledger.json"
+                previous={"516":ledger_initial, "514":{"state":"submitted","pr":515}}
+                q.save_ledger(previous,ledger)
+                remote={**record,**(change or {}).get("issue",{})}
+                def fetch(url):
+                    if url.endswith("/issues/516"):
+                        return remote
+                    if "/pulls?" in url:
+                        return (change or {}).get("history",[])
+                    self.fail("Unexpected GitHub read")
+                if change is not None or ledger_override is not None:
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_banner_cache_task(ledger,fetch)
+                    self.assertEqual(q.read_ledger(ledger),previous)
+                else:
+                    self.assertTrue(q.retire_failed_banner_cache_task(ledger,fetch))
+                    result=q.read_ledger(ledger)
+                    self.assertEqual(result["516"],{"state":"retired","attempts":1,
+                         "reason":"discarded-banner-cache-task"})
+                    self.assertEqual(result["514"],previous["514"])
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_banner_cache_task(ledger,fetch)
+        scenario()
+        for changed in (
+            {"issue":{"labels":[{"name":"go-worker-approved"}]}},
+            {"issue":{"user":{"login":"other"}}},
+            {"issue":{"state":"closed"}},
+            {"issue":{"title":"[GO-WORKER] different"}},
+            {"issue":{"body":"GO_WORKER_TASK_JSON:{}"}},
+            {"history":[{"title":"Worker: issue #516 draft changes",
+                         "body":"Source task: #516",
+                         "created_at":"2026-11-11T09:00:00Z"}]},
+            {"history":[{"title":"Unrelated","body":"","created_at":"invalid"}]},
+        ):
+            with self.subTest(changed=changed):
+                scenario(change=changed)
+        for invalid in ({"state":"started","attempts":1,
+                         "failure_stage":"edit-single"},
+                        {"state":"needs-review","attempts":2,
+                         "failure_stage":"edit-single"},
+                        {"state":"needs-review","attempts":1,
+                         "failure_stage":"publish"},
+                        {"state":"needs-review","attempts":1,
+                         "failure_stage":"edit-single","pr":517}):
+            with self.subTest(invalid=invalid):
+                scenario(ledger_override=invalid)
+
+    def test_queue_status_uses_only_allowlisted_failure_category(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/"ledger.json"
+            q.save_ledger({"516":{"state":"needs-review","attempts":1,
+                                  "failure_stage":"edit-single",
+                                  "failure_category":"quota"},
+                           "517":{"state":"needs-review","attempts":1,
+                                  "failure_stage":"edit-single",
+                                  "failure_category":"GITHUB_TOKEN=SECRET"}},ledger)
+            from io import StringIO
+            with patch("sys.stdout",new_callable=StringIO) as out:
+                q.ledger_summary(ledger)
+            output=out.getvalue()
+            self.assertIn("stage: edit-single; category: quota",output)
+            self.assertNotIn("SECRET",output)
+            self.assertNotIn("GITHUB_TOKEN",output)
+
 if __name__=="__main__":unittest.main()
