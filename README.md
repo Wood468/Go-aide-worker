@@ -8,6 +8,16 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.17: bounded model-service retry and guarded two-file retirement
+
+On v0.5.16, controlled two-file source+test [pilot #531](https://github.com/Wood468/crispy-barnacle/issues/531) was claimed and reached `edit-source`, then failed with the durable fixed category `service`. No draft PR was created. Editing and publication were disabled and the original approval removed. This category indicates an HTTP service failure, **not** quota/auth/safety, but the exact upstream HTTP status was intentionally not recorded.
+
+`direct_editor.generate` now makes **at most one immediate reattempt after a one-second pause** only for Gemini HTTP 500, 502, 503 or 504 responses. A second service failure stops, fails closed and puts the issue in `needs-review` as before. HTTP 429 quota, auth 401/403, model 400/404, timeouts, malformed JSON, invalid model output, unsafe changes, symlink and size errors are **never retried**. Both requests use the same previously validated input without touching a checkout file until valid structured JSON passes safety and exact-patch checks. This is a transport retry within one approved job, **not** a second task execution or a way to bypass the ledger.
+
+A new credential-free `queue_retire_two_file_service_task` action retires **only** exactly deapproved issue #531 after verifying owner/title, v2 two-file contract, one failed `edit-source` attempt with category `service`, and complete post-issue PR history proving no worker draft was published. Other ledger entries remain unchanged. This action cannot edit, publish, retry, clear the queue or access credentials.
+
+Rollout requires reviewed latest-head static and Docker CI, installation with queue/edit/publish OFF, one-time issue-specific retirement, read-only ledger confirmation, then a new distinct pilot on a nonoverlapping pair of app files. Do not replay #531 or permit unattended multi-file source edits before an end-to-end accepted source+test+cache pilot.
+
 ## v0.5.16: safe diagnostics for pre-claim queue failures
 
 The second controlled four-file acceptance task [#528](https://github.com/Wood468/crispy-barnacle/issues/528) exited with code 2 before creating any draft PR **or even a ledger entry**. This means there is no evidence that source editing or Gemini was reached. A new one-way, fixed-category output mechanism distinguishes issues with the public GitHub read path, API quota, invalid issue list or ledger, and concurrent queue locks. The subprocess's output is held privately by the job runner, and only a single exact allowlisted `WORKER_QUEUE_DIAGNOSTIC:<category>` marker can reach Home Assistant logs. Arbitrary output, prompts, API payloads, exception contents, and credentials are not logged.
