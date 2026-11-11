@@ -155,7 +155,8 @@ def has_pending_review(state, fetch=github_read):
 # acceptance pilot. No general-purpose ledger reset or automatic retry exists.
 PILOT_ISSUE = 462
 PILOT_PATH = "docs/worker-task-queue-pilot.md"
-RECOVERABLE_PILOTS = {462: PILOT_PATH, 465: "test/attendance-classification.test.mjs"}
+RECOVERABLE_PILOTS = {462: PILOT_PATH, 465: "test/attendance-classification.test.mjs",
+                      472: "test/variant-art.test.mjs"}
 
 
 def ledger_summary(path=LEDGER):
@@ -363,7 +364,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "ack_code_pilot"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -384,6 +385,8 @@ def main():
             recover_pilot()
         elif mode == "recover_code_pilot":
             recover_pilot(pilot_issue=465)
+        elif mode == "recover_artwork_task":
+            recover_pilot(pilot_issue=472)
         elif mode == "ack_code_pilot":
             acknowledge_merged_code_pilot()
         else:

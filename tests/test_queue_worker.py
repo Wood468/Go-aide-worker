@@ -312,6 +312,52 @@ class WorkerQueueTests(unittest.TestCase):
                     self.assertEqual(scanned, [1, 2])
 
 
+
+    def test_artwork_recovery_is_issue_472_only_and_one_final_retry(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"472": {"state": "needs-review", "attempts": 1}}, ledger)
+            called = []
+            def fetch(url):
+                called.append(url)
+                if url.endswith("/issues/472"):
+                    return issue(number=472, path="test/variant-art.test.mjs")
+                if "/pulls?" in url:
+                    return []
+                self.fail("Unapproved network lookup")
+            self.assertTrue(q.recover_pilot(ledger, fetch=fetch, pilot_issue=472))
+            state = q.read_ledger(ledger)
+            self.assertEqual(state["472"], {"state": "approved-pilot-retry", "attempts": 1})
+            self.assertTrue(q.approved_for_dispatch(
+                q.parse_task(issue(number=472, path="test/variant-art.test.mjs")), state))
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=fetch, pilot_issue=472)
+            self.assertEqual(len(called), 2)
+
+    def test_artwork_recovery_fails_closed_if_any_matching_pr_or_changed_scope(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = Path(folder) / "ledger.json"
+            q.save_ledger({"472": {"state": "needs-review", "attempts": 1}}, ledger)
+            def existing_pr(url):
+                if url.endswith("/issues/472"):
+                    return issue(number=472, path="test/variant-art.test.mjs")
+                return [{"title": "Worker: issue #472 draft changes", "body": "Source task: #472",
+                         "created_at": "2026-11-10T22:08:00Z"}]
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=existing_pr, pilot_issue=472)
+            self.assertEqual(q.read_ledger(ledger)["472"]["state"], "needs-review")
+            def wrong_path(url):
+                if url.endswith("/issues/472"):
+                    return issue(number=472, path="test/another.test.mjs")
+                self.fail("Must reject before PR lookups")
+            with self.assertRaises(q.QueueError):
+                q.recover_pilot(ledger, fetch=wrong_path, pilot_issue=472)
+            for bad in ({"state": "needs-review", "attempts": 2},
+                        {"state": "submitted", "pr": 999, "attempts": 1}):
+                q.save_ledger({"472": bad}, ledger)
+                with self.assertRaises(q.QueueError):
+                    q.recover_pilot(ledger, fetch=lambda *_: self.fail("No remote lookup"), pilot_issue=472)
+
     def test_older_pr_cutoff_stops_after_all_newer_drafts_are_checked(self):
         from urllib.parse import parse_qs, urlparse
         with tempfile.TemporaryDirectory() as folder:
