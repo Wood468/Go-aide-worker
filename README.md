@@ -8,6 +8,12 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.4: one reviewed recovery for artwork test #472
+
+This version introduces a **single explicitly approved recovery action** for a failed, owner-approved #472 test-only task targeting existing `test/variant-art.test.mjs`. It reuses the exhaustive bounded post-issue GitHub PR history audit, issue author/label/path checks, and strictly enforced one-retry ceiling from the original pilots. **No general ledger reset exists.** It cannot run if the prior entry is not exactly the first `needs-review` attempt, if any matching draft PR exists, or if approval changed.
+
+To review and recover: inspect `queue_status` and the GitHub issue/PR history. Keep queue editing and publishing **OFF**. Explicitly enable queue, choose `queue_recover_artwork_task`, restart, inspect `queue_status` for `approved-pilot-retry`, then set Idle. Only after that decision, deliberately enable queue/edit/publish and run one `queue_once` job; inspect the resulting draft PR and full GitHub CI before any next job. Disable all flags and return Idle immediately after. A second failure cannot be recovered a third time; do not enable continuous queue until the worker's single-file tests and ledger are reviewed. No automated merges or deployments.
+
 ## v0.5.3: acknowledge the already-merged approved code pilot
 
 The owner-approved #465 test-only worker task produced draft PR #467, which was reviewed, passed required CI and was squash-merged into the app. Its local queue ledger remained `needs-review`, which correctly blocks future automatic jobs until reconciled.
