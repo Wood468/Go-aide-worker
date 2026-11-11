@@ -561,4 +561,108 @@ class WorkerQueueTests(unittest.TestCase):
                 simulate(old_state=old_state)
 
 
+
+    def test_versioned_source_test_contract_rejects_broader_scopes(self):
+        def task(paths, version=2, author="Wood468", labels=None, extra=None):
+            payload={"version":version, "paths":paths, "instruction":
+                     "Preserve behaviour while adding an explicit related regression assertion."}
+            payload.update(extra or {})
+            original=issue(author=author, labels=labels)
+            original["body"]="GO_WORKER_TASK_JSON:"+json.dumps(payload)
+            return original
+        good=["public/event-components.js",
+              "test/event-components-crowned-alias.test.mjs"]
+        parsed=q.parse_task(task(good))
+        self.assertEqual(parsed["paths"], good)
+        self.assertEqual(parsed["version"], 2)
+        for paths in (
+            list(reversed(good)),
+            [good[0]],
+            [good[0], good[1], "test/variant-art.test.mjs"],
+            [good[0], good[0]],
+            [good[0], "test/variant-art.test.mjs"],
+            ["public/event-redesign.css", good[1]],
+            ["public/../../.github/workflows/ci.yml", good[1]],
+            ["public/.env", good[1]],
+            ["public/app.js", "test/event-components-crowned-alias.test.mjs"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertIsNone(q.parse_task(task(paths)))
+        self.assertIsNone(q.parse_task(task(good, version=True)))
+        self.assertIsNone(q.parse_task(task(good, version=3)))
+        self.assertIsNone(q.parse_task(task(good, extra={"shell": "echo unsafe"})))
+        self.assertIsNone(q.parse_task(task(good, author="another")))
+        self.assertIsNone(q.parse_task(task(good, labels=["p1"])))
+
+    def test_two_file_task_does_not_publish_partial_or_outside_scope_changes(self):
+        pair=["public/event-components.js",
+              "test/event-components-crowned-alias.test.mjs"]
+        item=issue(number=600)
+        item["body"]="GO_WORKER_TASK_JSON:"+json.dumps({
+            "version":2, "paths":pair,
+            "instruction":"Update both approved files without changing any other file."})
+        parsed=q.parse_task(item)
+        self.assertIsNotNone(parsed)
+        for failure in ("none", "partial", "extra", "approval-changed"):
+            with self.subTest(failure=failure):
+                with tempfile.TemporaryDirectory() as folder:
+                    root=Path(folder); checkout=root/"source"
+                    (checkout/"public").mkdir(parents=True)
+                    (checkout/"test").mkdir()
+                    for path in pair:
+                        (checkout/path).write_text("const original = true;\n")
+                    ledger=root/"ledger.json"
+                    touched=[]
+                    published=[]
+                    current=dict(item)
+                    def fetch(url):
+                        self.assertTrue(url.endswith("/issues/600"))
+                        return current
+                    def runner(command, env):
+                        if command[-1].endswith("refresh_repo.py"):
+                            return b""
+                        if command[-1].endswith("direct_editor.py"):
+                            relative=env["EDIT_FILES"]
+                            self.assertNotIn("GITHUB_TOKEN", env)
+                            touched.append(relative)
+                            if failure != "partial" or relative == pair[0]:
+                                (checkout/relative).write_text("const updated = true;\n")
+                            if failure == "approval-changed" and relative == pair[1]:
+                                current["labels"]=[]
+                            return b""
+                        if command[:2] == ["node", "--check"]:
+                            self.assertNotIn("GEMINI_API_KEY", env)
+                            self.assertNotIn("GITHUB_TOKEN", env)
+                            return b""
+                        if command[-1].endswith("publisher.py"):
+                            published.append(env)
+                            return b"Created draft PR #601"
+                        self.fail("Unexpected worker command")
+                    original_save=q.save_ledger
+                    def changes(_):
+                        files=[(p,(checkout/p).read_bytes()) for p in pair
+                               if (checkout/p).read_text() != "const original = true;\n"]
+                        if failure == "extra":
+                            files.append(("public/unapproved.js",b"bad"))
+                        return "head",sorted(files)
+                    with (patch.object(q,"ROOT",root),patch.object(q,"CHECKOUT",checkout),
+                          patch.object(q,"save_ledger",
+                                       side_effect=lambda state:original_save(state,ledger)),
+                          patch.dict(os.environ,{"GITHUB_TOKEN":"dummy-gh",
+                                              "GEMINI_API_KEY":"dummy-gemini"}),
+                          patch.dict(sys.modules,{"publisher":type("Stub",(),{
+                              "local_git":staticmethod(lambda *args:b"tracked"),
+                              "safe_files":staticmethod(changes)})()})):
+                        if failure == "none":
+                            self.assertTrue(q.perform(parsed,{},fetch,runner))
+                            self.assertEqual([p for p in touched],pair)
+                            self.assertEqual(len(published),1)
+                            self.assertEqual(json.loads(published[0]["WORKER_APPROVED_PATHS"]),pair)
+                            self.assertEqual(q.read_ledger(ledger)["600"]["state"],"submitted")
+                        else:
+                            with self.assertRaises(q.QueueError):
+                                q.perform(parsed,{},fetch,runner)
+                            self.assertEqual(published,[])
+                            self.assertEqual(q.read_ledger(ledger)["600"]["state"],"needs-review")
+
 if __name__=="__main__":unittest.main()

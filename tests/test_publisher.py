@@ -1,12 +1,15 @@
 """Offline security tests for restricted draft PR publication; no network or secrets."""
 import importlib.util
 import os
+import json
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "addon"))
 P = Path(__file__).resolve().parents[1] / "addon/publisher.py"
 spec = importlib.util.spec_from_file_location("publisher", P)
 publisher = importlib.util.module_from_spec(spec)
@@ -232,6 +235,71 @@ class DraftPublisher(unittest.TestCase):
                 self.assertNotIn("GITHUB_TOKEN", call.kwargs["env"])
                 self.assertNotIn("GEMINI_API_KEY", call.kwargs["env"])
 
+
+
+    def test_versioned_publisher_requires_exact_approved_tracked_pair(self):
+        pair=["public/event-components.js",
+              "test/event-components-crowned-alias.test.mjs"]
+        for rel in pair:
+            path=self.root/rel
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_text("const original = true;\n")
+        self.git("add", *pair)
+        self.git("commit", "-qm", "Seed source and regression")
+        sha=self.git("rev-parse", "HEAD").strip()
+        for rel in pair:
+            (self.root/rel).write_text("const updated = true;\n")
+        def approved():
+            return {"number": 600, "state":"open", "title":"[GO-WORKER] Paired source",
+                    "user":{"login":"Wood468"},
+                    "labels":[{"name":"go-worker-approved"}],
+                    "body":"GO_WORKER_TASK_JSON:"+json.dumps({
+                        "version":2, "paths":pair,
+                        "instruction":"Safely update both related files with equivalent assertions."})}
+        def perform(changed=None, paths=None):
+            operations=[]
+            def request(token,method,endpoint,payload=None):
+                operations.append((method,endpoint,payload))
+                if endpoint=="/issues/600":
+                    return changed if changed is not None else approved()
+                if endpoint=="/git/ref/heads/main":
+                    return {"object":{"sha":sha}}
+                if endpoint=="/git/commits/"+sha:
+                    return {"tree":{"sha":"base-tree"}}
+                if endpoint=="/git/blobs":return {"sha":"blob-sha"}
+                if endpoint=="/git/trees":return {"sha":"new-tree"}
+                if endpoint=="/git/commits":return {"sha":"new-commit"}
+                if endpoint=="/git/refs":return {}
+                if endpoint=="/pulls":return {"draft":True,"number":601}
+                self.fail("Unexpected GitHub API operation")
+            with patch.dict(os.environ,{
+                    "WORKER_ISSUE_NUMBER":"600",
+                    "WORKER_APPROVED_PATHS":json.dumps(pair if paths is None else paths)}):
+                try:
+                    result=publisher.publish(self.root,"dummy-token",request,"abcdef123456")
+                except publisher.PublishError:
+                    self.assertFalse(any(method=="POST" for method,_,_ in operations),
+                                     "Must not mutate GitHub for unapproved scope")
+                    return False
+                self.assertEqual(result,601)
+                self.assertEqual(operations[-1][1],"/pulls")
+                self.assertTrue(operations[-1][2]["draft"])
+                return True
+        self.assertTrue(perform())
+        broken=approved();broken["labels"]=[]
+        self.assertFalse(perform(changed=broken))
+        broken=approved();broken["body"]="GO_WORKER_TASK_JSON:{}"
+        self.assertFalse(perform(changed=broken))
+        self.assertFalse(perform(paths=list(reversed(pair))))
+        self.assertFalse(perform(paths=["public/app.js",pair[1]]))
+        self.assertFalse(perform(paths=[pair[0]]))
+        # Unauthorised third file must block before any API mutation.
+        (self.root/"README.md").write_text("Unauthorized diff\n")
+        self.assertFalse(perform())
+        self.git("restore","README.md")
+        # Missing one changed file must also fail closed.
+        self.git("restore",pair[1])
+        self.assertFalse(perform())
 
 if __name__ == "__main__":
     unittest.main()

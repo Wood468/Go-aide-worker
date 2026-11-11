@@ -126,6 +126,31 @@ def publish(workspace, token, request=api, branch_id=None):
     if not isinstance(token, str) or not token.strip():
         raise PublishError("Missing GitHub token")
     local_head, files = safe_files(workspace)
+    approved_raw = os.environ.get("WORKER_APPROVED_PATHS")
+    if approved_raw is not None:
+        # Multi-file queue tasks are never allowed to use the unrestricted
+        # manual publishing pathway. Verify the exact task contract again.
+        import queue_worker
+        issue_number = os.environ.get("WORKER_ISSUE_NUMBER", "")
+        if not issue_number.isdecimal() or len(issue_number) > 10:
+            raise PublishError("Approved task issue missing")
+        try:
+            approved = json.loads(approved_raw)
+        except (ValueError, TypeError):
+            raise PublishError("Malformed approved paths") from None
+        if (not isinstance(approved, list) or len(approved) != 2
+                or not all(isinstance(p, str) for p in approved)
+                or tuple(approved) not in queue_worker.SOURCE_TEST_PAIRS
+                or [path for path, _ in files] != sorted(approved)):
+            raise PublishError("Edited files differ from approved source/test pair")
+        for relative in approved:
+            local_git(workspace, "ls-files", "--error-unmatch", "--", relative)
+        source = request(token, "GET", "/issues/" + issue_number)
+        task = queue_worker.parse_task(source)
+        if (not task or task.get("version") != 2
+                or task["issue"] != int(issue_number)
+                or task["paths"] != approved):
+            raise PublishError("Approved GitHub task was revoked or changed")
     ref = request(token, "GET", "/git/ref/heads/main")
     base_sha = ref["object"]["sha"]
     if base_sha != local_head:

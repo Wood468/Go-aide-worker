@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub-approved one-file queue. No arbitrary scripts, merges or deployments."""
+"""GitHub-approved bounded task queue. No arbitrary scripts, merges or deployments."""
 import fcntl
 import json
 import os
@@ -20,6 +20,13 @@ LEDGER = ROOT / "go-queue-ledger.json"
 LOCK = ROOT / ".go-queue.lock"
 PATH_RE = re.compile(r"(?:docs/worker-task-[a-z0-9-]{1,50}\.md|test/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.test\.mjs)")
 TASK_RE = re.compile(r"^GO_WORKER_TASK_JSON:(\{[^\n]{1,2400}\})$", re.MULTILINE)
+# Reviewed source-to-test pairs; no arbitrary source grant.
+SOURCE_TEST_PAIRS = {
+    ("public/event-components.js", "test/event-components-crowned-alias.test.mjs"),
+    ("public/today.js", "test/today-logic.test.mjs"),
+    ("public/detail.js", "test/event-detail-source-confidence.test.mjs"),
+    ("public/app.js", "test/universal-event.test.mjs"),
+}
 
 
 class QueueError(Exception):
@@ -64,14 +71,25 @@ def parse_task(issue):
         obj = json.loads(parts[0])
     except (TypeError, ValueError):
         return None
-    if not isinstance(obj, dict) or set(obj) != {"path", "instruction"}:
+    if not isinstance(obj, dict):
         return None
-    path, instruction = obj["path"], obj["instruction"]
-    if (not isinstance(path, str) or not PATH_RE.fullmatch(path)
-            or not isinstance(instruction, str)
-            or not 20 <= len(instruction.strip()) <= 1500):
+    instruction = obj.get("instruction")
+    if not isinstance(instruction, str) or not 20 <= len(instruction.strip()) <= 1500:
         return None
-    return {"issue": issue["number"], "path": path, "instruction": instruction.strip()}
+    if set(obj) == {"path", "instruction"}:
+        path = obj["path"]
+        if not isinstance(path, str) or not PATH_RE.fullmatch(path):
+            return None
+        return {"issue": issue["number"], "path": path, "instruction": instruction.strip()}
+    if set(obj) == {"version", "paths", "instruction"} and type(obj["version"]) is int and obj["version"] == 2:
+        paths = obj["paths"]
+        if (not isinstance(paths, list) or len(paths) != 2
+                or not all(isinstance(p, str) for p in paths)
+                or tuple(paths) not in SOURCE_TEST_PAIRS):
+            return None
+        return {"issue": issue["number"], "version": 2,
+                "paths": list(paths), "instruction": instruction.strip()}
+    return None
 
 
 def candidates(fetch=github_read):
@@ -375,15 +393,28 @@ def perform(task, state, fetch=github_read, runner=child_run):
     save_ledger(state)
     try:
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
-        target = CHECKOUT / task["path"]
-        test_edit = task["path"].startswith("test/")
-        if not target.parent.is_dir() or target.parent.is_symlink() or target.is_symlink():
-            raise QueueError("Unsafe task target")
-        if test_edit:
-            if not target.is_file():
-                raise QueueError("Test task must edit exactly one existing file")
-        elif target.exists():
-            raise QueueError("Documentation task must create exactly one new file")
+        multi = task.get("version") == 2
+        paths = task["paths"] if multi else [task["path"]]
+        if multi and tuple(paths) not in SOURCE_TEST_PAIRS:
+            raise QueueError("Disallowed source/test contract")
+        for relative in paths:
+            target = CHECKOUT / relative
+            if (not target.parent.is_dir() or target.parent.is_symlink()
+                    or target.is_symlink()):
+                raise QueueError("Unsafe task target")
+            if multi:
+                if not target.is_file():
+                    raise QueueError("Both source/test files must already exist")
+                import publisher
+                publisher.local_git(CHECKOUT, "ls-files", "--error-unmatch", "--", relative)
+            elif relative.startswith("test/"):
+                if not target.is_file():
+                    raise QueueError("Test task must edit exactly one existing file")
+            elif target.exists():
+                raise QueueError("Documentation task must create exactly one new file")
+        if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
+                                       "/issues/" + key)) != task:
+            raise QueueError("Multi-file approval changed")
         # Store only the editing instruction, never a credential.
         job = ROOT / "job.json"
         if job.is_symlink() or (job.exists() and not job.is_file()):
@@ -405,20 +436,26 @@ def perform(task, state, fetch=github_read, runner=child_run):
         finally:
             if temp.exists():
                 temp.unlink()
-        runner([sys.executable, "/opt/worker/direct_editor.py"],
-               child_env(GEMINI_API_KEY=gemini, EDIT_FILES=task["path"],
-                         GO_WORKER_QUEUE_EDIT="1"))
-        if test_edit:
-            # Parsing only: NEVER run Gemini-generated tests while the parent
-            # holds GitHub credentials. GitHub Actions runs full test suites
-            # on the draft PR under its separate restricted CI environment.
-            runner(["node", "--check", str(target)], child_env())
+        for relative in paths:
+            runner([sys.executable, "/opt/worker/direct_editor.py"],
+                   child_env(GEMINI_API_KEY=gemini, EDIT_FILES=relative,
+                             GO_WORKER_QUEUE_EDIT="1"))
+        # Parse edited JS only. Never execute model-produced tests in HA.
+        for relative in paths:
+            if multi or relative.startswith("test/"):
+                runner(["node", "--check", str(CHECKOUT / relative)], child_env())
         import publisher
         _head, changed = publisher.safe_files(CHECKOUT)
-        if [name for name, _data in changed] != [task["path"]]:
-            raise QueueError("Changes outside approved file detected")
-        out = runner([sys.executable, "/opt/worker/publisher.py"],
-                     child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true", WORKER_ISSUE_NUMBER=key))
+        if [name for name, _data in changed] != sorted(paths):
+            raise QueueError("Missing or extra modified task paths")
+        if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
+                                       "/issues/" + key)) != task:
+            raise QueueError("Multi-file approval revoked before publication")
+        publication_env = child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true",
+                                    WORKER_ISSUE_NUMBER=key)
+        if multi:
+            publication_env["WORKER_APPROVED_PATHS"] = json.dumps(paths)
+        out = runner([sys.executable, "/opt/worker/publisher.py"], publication_env)
         matched = re.search(rb"Created draft PR #(\d+)", out)
         if matched is None:
             raise QueueError("No verified PR number; inspect GitHub before retry")
