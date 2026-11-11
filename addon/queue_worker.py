@@ -922,6 +922,197 @@ def retire_failed_places_publish_task(path=LEDGER, fetch=github_read):
     return True
 
 
+
+# Fixed identity of the failed, deapproved v1 task. Never accept a new task
+# by changing the issue body after the fact.
+RETIRED_563_INSTRUCTION = "Edit ONLY existing tracked test/event-encounter-rotations.test.mjs. Append exactly one deterministic node:test regression named 'future venue-local rotation respects daylight-saving offset changes'. Clone the existing fixture with copy(), set a future event ID and valid Australian DST transition weekend dates, timeBasis='venue-local', timeZone='Australia/Melbourne'; use Rot.validate and Rot.active with explicit UTC Date instants to verify venue-local habitat-hour switching on both sides of the DST transition. Preserve all existing tests, imports and source data. Do not change any other file. If the existing API does not permit a valid fixture, do not invent behavior or edit source. Publish one DRAFT PR only; never merge or deploy."
+
+
+def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
+    """Retire only #563 after complete read-only no-publication verification.
+
+    This action is deliberately NOT a generic retry/reset. It has no
+    GitHub write capability and is launched with neither provider credential.
+    """
+    state = read_ledger(path)
+    previous = state.get("563")
+    if (not isinstance(previous, dict) or previous != {
+            "state": "needs-review", "attempts": 1,
+            "failure_stage": "edit-single", "failure_category": "service"}):
+        raise QueueError("Rotation service retirement is not eligible")
+
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/563")
+    if not isinstance(issue, dict):
+        raise QueueError("Rotation task issue unavailable")
+    raw = issue.get("body")
+    matches = TASK_RE.findall(raw) if isinstance(raw, str) and len(raw) <= 5000 else []
+    try:
+        contract = json.loads(matches[0]) if len(matches) == 1 else None
+    except (ValueError, TypeError):
+        contract = None
+    labels = issue.get("labels")
+    if (type(issue.get("number")) is not int or issue["number"] != 563
+            or issue.get("state") != "open"
+            or not isinstance(issue.get("user"), dict)
+            or issue["user"].get("login", "").lower() != "wood468"
+            or issue.get("title") != "[GO-WORKER] Unattended v1 regression: venue-local habitat DST boundaries"
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)
+            or not isinstance(contract, dict)
+            or contract != {"path": "test/event-encounter-rotations.test.mjs",
+                            "instruction": RETIRED_563_INSTRUCTION}):
+        raise QueueError("Rotation task identity, contract or approval changed")
+
+    iso = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    created = issue.get("created_at")
+    if not isinstance(created, str) or not re.fullmatch(iso, created):
+        raise QueueError("Rotation task timestamp unavailable")
+
+    # Follow all PR pages since the original issue, including CLOSED drafts.
+    # Check both explicit task linkage and branch/file content for any worker
+    # PR with erased task references. Unknown metadata fails closed.
+    pr_history_complete = False
+    last_created = None
+    seen_prs = set()
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Rotation PR history unavailable")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Rotation PR history malformed")
+            timestamp = pr.get("created_at")
+            number = pr.get("number")
+            if (not isinstance(timestamp, str) or not re.fullmatch(iso, timestamp)
+                    or type(number) is not int or number <= 0 or number in seen_prs
+                    or (last_created is not None and timestamp > last_created)):
+                raise QueueError("Rotation PR history incomplete")
+            seen_prs.add(number)
+            last_created = timestamp
+            if timestamp < created:
+                pr_history_complete = True
+                break
+            if ("Worker: issue #563" in str(pr.get("title") or "")
+                    or "Source task: #563" in str(pr.get("body") or "")):
+                raise QueueError("Rotation task may already have a worker PR")
+            head = pr.get("head")
+            if not isinstance(head, dict) or not isinstance(head.get("ref"), str):
+                raise QueueError("Rotation PR source branch unavailable")
+            if head["ref"].startswith("worker/review-"):
+                if not re.fullmatch(r"worker/review-[a-f0-9]{12}", head["ref"]):
+                    raise QueueError("Unexpected worker PR branch")
+                # A hidden task edit could appear in an unrelatedly titled PR.
+                # Check its complete changed-file inventory, never just title.
+                files_complete = False
+                seen_paths = set()
+                for file_page in range(1, 11):
+                    changed = fetch("https://api.github.com/repos/" + REPO +
+                                    "/pulls/" + str(number) +
+                                    "/files?per_page=100&page=" + str(file_page))
+                    if not isinstance(changed, list) or len(changed) > 100:
+                        raise QueueError("Worker PR file history unavailable")
+                    for item in changed:
+                        if not isinstance(item, dict) or not isinstance(item.get("filename"), str):
+                            raise QueueError("Worker PR changed-file metadata invalid")
+                        filename = item["filename"]
+                        if filename in seen_paths:
+                            raise QueueError("Worker PR file history repeated")
+                        seen_paths.add(filename)
+                        if filename == "test/event-encounter-rotations.test.mjs":
+                            raise QueueError("Potential rotation worker PR already exists")
+                    if len(changed) < 100:
+                        files_complete = True
+                        break
+                if not files_complete:
+                    raise QueueError("Worker PR file pagination incomplete")
+        if pr_history_complete or len(prs) < 5:
+            pr_history_complete = True
+            break
+    if not pr_history_complete:
+        raise QueueError("Rotation PR pagination incomplete")
+
+    # Historical random and new deterministic refs both use worker/review-.
+    # Never trust the branch TIP diff: a later unrelated commit could hide
+    # an earlier edit. For post-issue branch tips, compare the entire branch
+    # against its merge-base with main, then verify the response is complete.
+    branch_history_complete = False
+    seen_branches = set()
+    for page in range(1, 11):
+        branches = fetch("https://api.github.com/repos/" + REPO +
+                         "/branches?per_page=100&page=" + str(page))
+        if not isinstance(branches, list) or len(branches) > 100:
+            raise QueueError("Rotation branch inventory unavailable")
+        for branch in branches:
+            if not isinstance(branch, dict):
+                raise QueueError("Rotation branch inventory invalid")
+            name = branch.get("name")
+            head = branch.get("commit")
+            sha = head.get("sha") if isinstance(head, dict) else None
+            if (not isinstance(name, str) or name in seen_branches
+                    or not isinstance(sha, str) or not re.fullmatch(r"[a-f0-9]{40}", sha)):
+                raise QueueError("Rotation branch inventory incomplete")
+            seen_branches.add(name)
+            if not name.startswith("worker/review-"):
+                continue
+            if not re.fullmatch(r"worker/review-[a-f0-9]{12}", name):
+                raise QueueError("Unexpected worker branch identity")
+            tip = fetch("https://api.github.com/repos/" + REPO + "/commits/" + sha)
+            if not isinstance(tip, dict) or tip.get("sha") != sha:
+                raise QueueError("Worker branch commit unverified")
+            info = tip.get("commit")
+            committer = info.get("committer") if isinstance(info, dict) else None
+            timestamp = committer.get("date") if isinstance(committer, dict) else None
+            if not isinstance(timestamp, str) or not re.fullmatch(iso, timestamp):
+                raise QueueError("Worker branch timestamp unavailable")
+            if timestamp < created:
+                # Verified branch tip predates the task. It cannot include
+                # a later edit of #563.
+                continue
+
+            # The three-dot compare includes all branch-only commits since
+            # the merge base, not merely the last commit's file list.
+            comparison = fetch("https://api.github.com/repos/" + REPO +
+                               "/compare/main..." + name)
+            if not isinstance(comparison, dict):
+                raise QueueError("Worker branch comparison unavailable")
+            count = comparison.get("total_commits")
+            ahead = comparison.get("ahead_by")
+            commits = comparison.get("commits")
+            files = comparison.get("files")
+            if (type(count) is not int or not 1 <= count <= 100
+                    or type(ahead) is not int or ahead != count
+                    or not isinstance(commits, list) or len(commits) != count
+                    or not isinstance(files, list) or not 1 <= len(files) < 300
+                    or comparison.get("status") not in {"ahead", "diverged"}
+                    or not isinstance(commits[-1], dict)
+                    or commits[-1].get("sha") != sha):
+                raise QueueError("Worker branch comparison incomplete")
+            seen_paths = set()
+            for item in files:
+                filename = item.get("filename") if isinstance(item, dict) else None
+                if not isinstance(filename, str) or filename in seen_paths:
+                    raise QueueError("Worker branch changed files invalid")
+                seen_paths.add(filename)
+                if filename == "test/event-encounter-rotations.test.mjs":
+                    raise QueueError("Ambiguous existing rotation worker branch")
+        if len(branches) < 100:
+            branch_history_complete = True
+            break
+    if not branch_history_complete:
+        raise QueueError("Rotation branch pagination incomplete")
+
+    # Only one immutable ledger entry changes; all prior results survive.
+    state["563"] = {"state": "retired", "attempts": 1,
+                    "reason": "failed-rotation-edit-service-no-retry"}
+    save_ledger(state, path)
+    print("Rotation edit-service task #563 safely retired without retry or PR", flush=True)
+    return True
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -1074,7 +1265,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -1113,6 +1304,8 @@ def main():
             retire_failed_two_file_service_task()
         elif mode == "retire_places_publish_task":
             retire_failed_places_publish_task()
+        elif mode == "retire_rotation_service_task":
+            retire_failed_rotation_service_task()
         else:
             once(scan=(mode == "scan"))
 
