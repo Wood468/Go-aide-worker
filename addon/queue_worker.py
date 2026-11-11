@@ -32,6 +32,39 @@ SOURCE_TEST_PAIRS = {
 class QueueError(Exception):
     pass
 
+# Only controlled direct-editor messages can become status categories. Never
+# copy raw model responses, subprocess output, exception details or credentials.
+EDITOR_FAILURES = {
+    b"Direct Gemini edit rejected: Gemini request rejected: quota": "quota",
+    b"Direct Gemini edit rejected: Gemini request rejected: auth": "auth",
+    b"Direct Gemini edit rejected: Gemini request rejected: model": "model",
+    b"Direct Gemini edit rejected: Gemini request rejected: service": "service",
+    b"Direct Gemini edit rejected: Gemini connection or response error": "network",
+    b"Direct Gemini edit rejected: Gemini request failed": "service",
+    b"Direct Gemini edit rejected: Gemini response exceeds limit": "response-size",
+    b"Direct Gemini edit rejected: Model returned invalid structured edit": "format",
+    b"Direct Gemini edit rejected: Model returned invalid large-file response": "format",
+    b"Direct Gemini edit rejected: Model returned unapproved path or content": "format",
+    b"Direct Gemini edit rejected: No content change produced": "no-change",
+    b"Direct Gemini edit rejected: Large-file replacement anchor is not unique": "anchor",
+    b"Direct Gemini edit rejected: Overlapping large-file replacements": "anchor",
+    b"Direct Gemini edit rejected: Edited file failed content safety checks": "safety",
+    b"Direct Gemini edit rejected: Selected file is too large": "safety",
+    b"Direct Gemini edit rejected: Selected file is invalid or oversized": "safety",
+    b"Direct Gemini edit rejected: Exactly one validated edit target required": "safety",
+    b"Direct Gemini edit rejected: JobError": "safety",
+}
+EDITOR_CATEGORIES = frozenset(EDITOR_FAILURES.values()) | {"unknown", "timeout"}
+
+
+class EditorChildError(QueueError):
+    def __init__(self, category):
+        if category not in EDITOR_CATEGORIES:
+            category = "unknown"
+        self.category = category
+        super().__init__("Restricted editor failed")
+
+
 
 def github_read(url, opener=urllib.request.urlopen):
     if (not url.startswith("https://api.github.com/repos/" + REPO + "/")
@@ -150,9 +183,18 @@ def child_run(command, env):
         result = subprocess.run(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=360, check=False)
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        if command[1:2] == ["/opt/worker/direct_editor.py"]:
+            raise EditorChildError("timeout") from None
+        raise QueueError("Worker child did not finish") from None
+    except OSError:
         raise QueueError("Worker child did not finish") from None
     if result.returncode:
+        if command[1:2] == ["/opt/worker/direct_editor.py"]:
+            # Exact-match fixed, pre-reviewed error lines ONLY. All other output
+            # is untrusted and reduced to 'unknown'; nothing raw is logged.
+            category = EDITOR_FAILURES.get(result.stdout.strip(), "unknown")
+            raise EditorChildError(category)
         raise QueueError("Worker child failed")
     return result.stdout[:500]
 
@@ -194,8 +236,14 @@ def ledger_summary(path=LEDGER):
                          "syntax-check", "diff-validation", "approval-postcheck",
                          "publish"}:
             stage = None
+        category = entry.get("failure_category") if isinstance(entry, dict) else None
+        if category not in EDITOR_CATEGORIES:
+            category = None
+        detail = "stage: " + stage if stage else ""
+        if status == "needs-review" and category and stage in {"edit-single", "edit-source", "edit-test"}:
+            detail += "; category: " + category
         print("Worker queue #" + str(key) + ": " + status +
-              (" (stage: " + stage + ")" if status == "needs-review" and stage else ""),
+              (" (" + detail + ")" if status == "needs-review" and detail else ""),
               flush=True)
     if not state:
         print("Worker queue ledger empty; no tasks claimed", flush=True)
@@ -582,6 +630,69 @@ def retire_failed_four_file_pilot(path=LEDGER, fetch=github_read):
 
 
 
+def retire_failed_banner_cache_task(path=LEDGER, fetch=github_read):
+    """Close out exact failed synthetic issue #516; never retry or publish."""
+    state = read_ledger(path)
+    previous = state.get("516")
+    if (not isinstance(previous, dict) or previous.get("state") != "needs-review"
+            or previous.get("attempts") != 1 or previous.get("failure_stage") != "edit-single" or "pr" in previous):
+        raise QueueError("Exact banner-cache task retirement not eligible")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/516")
+    if not isinstance(issue, dict):
+        raise QueueError("Banner-cache task issue unavailable")
+    body = issue.get("body")
+    parts = TASK_RE.findall(body) if isinstance(body, str) else []
+    try:
+        task = json.loads(parts[0]) if len(parts) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    labels = issue.get("labels")
+    expected = "test/offline-event-banner-cache.test.mjs"
+    if (issue.get("number") != 516 or issue.get("state") != "open"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or issue.get("title") != "[GO-WORKER] Test banner cache bypasses insecure and non-image requests"
+            or task.get("path") != expected or set(task) != {"path", "instruction"}
+            or not isinstance(task.get("instruction"), str)
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)):
+        raise QueueError("Exact banner-cache task identity or approval changed")
+    issued = issue.get("created_at")
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
+        raise QueueError("Pilot issue creation time unavailable")
+    verified_cutoff = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Invalid pilot PR history")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Malformed pilot PR history")
+            created = pr.get("created_at")
+            if not isinstance(created, str) or not re.fullmatch(iso_utc, created):
+                raise QueueError("Pilot PR creation time unavailable")
+            if created < issued:
+                verified_cutoff = True
+                break
+            if ("Worker: issue #516" in str(pr.get("title") or "")
+                    or "Source task: #516" in str(pr.get("body") or "")):
+                raise QueueError("Banner-cache task may already have a published PR")
+        if verified_cutoff or len(prs) < 5:
+            verified_cutoff = True
+            break
+    if not verified_cutoff:
+        raise QueueError("Cannot verify complete banner-cache task PR history")
+    state["516"] = {"state": "retired", "attempts": 1, "reason": "discarded-banner-cache-task"}
+    save_ledger(state, path)
+    print("Failed banner-cache task #516 retired without retry or PR", flush=True)
+    return True
+
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -685,10 +796,14 @@ def perform(task, state, fetch=github_read, runner=child_run):
         save_ledger(state)
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
-    except Exception:
-        # Static stage only: never persist the exception, prompts, files or keys.
-        state[key] = {"state": "needs-review", "attempts": attempts,
-                      "failure_stage": stage}
+    except Exception as exc:
+        # Static stage/category ONLY: no exception text, prompts, files, raw
+        # child output or credentials ever reach this durable ledger.
+        failure = {"state": "needs-review", "attempts": attempts,
+                   "failure_stage": stage}
+        if isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"}:
+            failure["failure_category"] = exc.category
+        state[key] = failure
         save_ledger(state)
         raise
 
@@ -718,7 +833,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -751,6 +866,8 @@ def main():
             retire_abandoned_venue_clock_task()
         elif mode == "retire_four_file_pilot":
             retire_failed_four_file_pilot()
+        elif mode == "retire_banner_cache_task":
+            retire_failed_banner_cache_task()
         else:
             once(scan=(mode == "scan"))
 
