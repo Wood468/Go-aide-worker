@@ -83,6 +83,122 @@ class SingleFileEditorTests(unittest.TestCase):
         self.assertEqual((self.folder/"other.txt").read_text(),"unchanged")
 
 
+    def test_large_file_exact_match_preserves_untouched_sections(self):
+        original = "unchanged prefix\\n" * 3100 + (
+            "def target():\\n    return 'before'\\n") + "unchanged suffix\\n" * 400
+        original = original.replace("\\n", "\n")
+        old = "def target():\n    return 'before'\n"
+        new = "def target():\n    return 'after'\n"
+        self.assertGreater(len(original.encode("utf-8")), editor.MAX_INPUT)
+        def open_request(req, timeout):
+            self.assertEqual(timeout, 45)
+            payload = json.loads(req.data)
+            instruction = payload["contents"][0]["parts"][0]["text"]
+            self.assertIn('"replacements"', instruction)
+            self.assertIn(old, instruction)
+            self.assertNotIn("dummy", req.full_url)
+            return FakeResponse({"path": "WORKER_SMOKE_TEST.txt",
+                                 "replacements": [{"old": old, "new": new}]})
+        self.target.write_text(original)
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}):
+            self.assertTrue(editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"],
+                                        "Change target return value", "dummy",
+                                        generator=lambda k,p,path,text:
+                                        editor.generate(k,p,path,text,open_request)))
+        self.assertEqual(self.target.read_text(), original.replace(old, new))
+        self.assertEqual(list(self.folder.glob(".worker-edit-*")), [])
+
+    def test_large_file_uses_utf8_byte_size(self):
+        original = "é" * 22_000 + "\ndef target():\n    return 'before'\n"
+        old = "def target():\n    return 'before'\n"
+        self.assertLess(len(original), editor.MAX_INPUT)
+        self.assertGreater(len(original.encode("utf-8")), editor.MAX_INPUT)
+        output = editor.generate("dummy", "Change target", "WORKER_SMOKE_TEST.txt", original,
+                  opener=lambda req,timeout: FakeResponse({
+                      "path": "WORKER_SMOKE_TEST.txt",
+                      "replacements": [{"old": old, "new": old.replace("before", "after")}]}))
+        self.assertEqual(output, original.replace(old, old.replace("before", "after")))
+
+    def test_large_file_refuses_whole_file_response(self):
+        original = "unchanged line\n" * 3200
+        with self.assertRaises(editor.DirectEditError):
+            editor.generate("dummy", "Change a line", "WORKER_SMOKE_TEST.txt", original,
+                opener=lambda req,timeout: FakeResponse({
+                    "path": "WORKER_SMOKE_TEST.txt", "content": "unexpected replacement"}))
+
+    def test_large_file_refuses_wrong_path_and_extra_fields(self):
+        original = "unchanged line\n" * 3200
+        old = "unchanged line\n"
+        for result in (
+            {"path": "README.md", "replacements": [{"old": old, "new": "x"}]},
+            {"path": "WORKER_SMOKE_TEST.txt", "replacements": [], "content": "x"},
+            {"path": "WORKER_SMOKE_TEST.txt", "replacements": "not a list"},
+        ):
+            with self.subTest(result=result):
+                with self.assertRaises(editor.DirectEditError):
+                    editor.generate("dummy", "Change a line", "WORKER_SMOKE_TEST.txt", original,
+                        opener=lambda req,timeout: FakeResponse(result))
+
+    def test_large_file_rejects_ambiguous_missing_overlapping_and_noop(self):
+        text = "alpha\n" + "unique section before\n" + "inner section\n" + "omega\n"
+        invalid = [
+            [{"old": "alpha\n", "new": "beta\n"}],  # Too short for safe anchor.
+            [{"old": "missing content\n", "new": "updated\n"}],
+            [{"old": "unique section before\n", "new": "unique section before\n"}],
+            [{"old": "unique section before\ninner section\n", "new": "first\n"},
+             {"old": "inner section\n", "new": "second\n"}],
+            [{"old": "unique section before\n", "new": "a"}] * 4,
+            [{"old": "unique section before\n", "new": "a" * (editor.MAX_REPLACEMENT_CHARS + 1)}],
+            [{"old": "unique section before\n", "new": "a" * 12_000},
+             {"old": "inner section\n", "new": "b" * 12_000}],
+            [{"old": "unique section before\n", "new": 123}],
+        ]
+        for patches in invalid:
+            with self.subTest(patches=str(patches)[:80]):
+                with self.assertRaises(editor.DirectEditError):
+                    editor.apply_replacements(text, patches)
+        with self.assertRaises(editor.DirectEditError):
+            editor.apply_replacements("same repeated\nsame repeated\n",
+                [{"old": "same repeated\n", "new": "different line\n"}])
+
+    def test_large_file_two_disjoint_patches_are_position_stable(self):
+        original = "START\nlong uniquely identified first section\nMIDDLE\n" + (
+                   "long uniquely identified second section\nEND\n")
+        updated = editor.apply_replacements(original, [
+            {"old": "long uniquely identified first section\n", "new": "FIRST\n"},
+            {"old": "long uniquely identified second section\n", "new": "SECOND\n"}])
+        self.assertEqual(updated, "START\nFIRST\nMIDDLE\nSECOND\nEND\n")
+
+    def test_file_above_100kb_rejected_before_network_or_write(self):
+        huge = "x" * (editor.MAX_FILE_BYTES + 1)
+        with self.assertRaises(editor.DirectEditError):
+            editor.generate("dummy", "Change file", "WORKER_SMOKE_TEST.txt", huge,
+                opener=lambda req,timeout: self.fail("No network permitted"))
+        self.target.write_text(huge)
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}):
+            with self.assertRaises(editor.DirectEditError):
+                editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"], "edit", "dummy",
+                    generator=lambda *_: self.fail("Generator must not run"))
+        self.assertEqual(self.target.read_text(), huge)
+
+    def test_large_file_final_output_cap_does_not_modify_original(self):
+        original = "x" * (editor.MAX_FILE_BYTES - 25) + "\nunique old anchor line\n"
+        self.assertLessEqual(len(original.encode("utf-8")), editor.MAX_FILE_BYTES)
+        self.target.write_text(original)
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}):
+            with self.assertRaises(editor.DirectEditError):
+                editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"], "edit", "dummy",
+                    generator=lambda k,p,path,text: editor.apply_replacements(text, [
+                        {"old": "unique old anchor line\n",
+                         "new": "a" * 300 + "\n"}]))
+        self.assertEqual(self.target.read_text(), original)
+
+    def test_bounded_model_response_bytes(self):
+        with self.assertRaises(editor.DirectEditError):
+            editor.generate("dummy", "change", "WORKER_SMOKE_TEST.txt", "",
+                opener=lambda req,timeout: FakeResponse({
+                    "path": "WORKER_SMOKE_TEST.txt", "content": "x" * editor.MAX_OUTPUT}))
+
     def test_queue_edit_reads_fixed_unprivileged_job_instead_of_manual_job(self):
         queue_file = self.folder / "queue-job.json"
         manual_file = self.folder / "manual-job.json"
