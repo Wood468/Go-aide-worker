@@ -108,6 +108,21 @@ class SingleFileEditorTests(unittest.TestCase):
         self.assertEqual(self.target.read_text(), original.replace(old, new))
         self.assertEqual(list(self.folder.glob(".worker-edit-*")), [])
 
+    def test_large_file_preserves_crlf_bytes_outside_replacement(self):
+        source = (b"untouched line\r\n" * 3100 +
+                  b"def target():\r\n    return 'before'\r\n" +
+                  b"tail untouched\r\n" * 100)
+        old = "def target():\r\n    return 'before'\r\n"
+        new = "def target():\r\n    return 'after'\r\n"
+        self.target.write_bytes(source)
+        with patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}):
+            editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"], "change return", "dummy",
+                generator=lambda k,p,path,text: editor.apply_replacements(text, [
+                    {"old": old, "new": new}]))
+        self.assertEqual(self.target.read_bytes(),
+                         source.replace(old.encode("utf-8"), new.encode("utf-8")))
+        self.assertIn(b"untouched line\r\n", self.target.read_bytes())
+
     def test_large_file_uses_utf8_byte_size(self):
         original = "é" * 22_000 + "\ndef target():\n    return 'before'\n"
         old = "def target():\n    return 'before'\n"
