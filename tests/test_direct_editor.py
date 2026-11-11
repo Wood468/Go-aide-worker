@@ -108,6 +108,19 @@ class SingleFileEditorTests(unittest.TestCase):
         self.assertEqual(self.target.read_text(), original.replace(old, new))
         self.assertEqual(list(self.folder.glob(".worker-edit-*")), [])
 
+    def test_medium_file_uses_exact_patch_not_oversized_full_response(self):
+        prefix = "unmodified medium-file line\\n" * 680
+        original = prefix.replace("\\n", "\n") + "unique medium-file target before\n"
+        self.assertGreater(len(original.encode("utf-8")), editor.MAX_INPUT)
+        self.assertLess(len(original.encode("utf-8")), 40_000)
+        old = "unique medium-file target before\n"
+        new = "unique medium-file target after\n"
+        result = editor.generate("dummy", "Change only target", "WORKER_SMOKE_TEST.txt",
+             original, opener=lambda req,timeout: FakeResponse({
+                 "path": "WORKER_SMOKE_TEST.txt",
+                 "replacements": [{"old": old, "new": new}]}))
+        self.assertEqual(result, original.replace(old, new))
+
     def test_large_file_preserves_crlf_bytes_outside_replacement(self):
         source = (b"untouched line\r\n" * 3100 +
                   b"def target():\r\n    return 'before'\r\n" +
@@ -124,7 +137,7 @@ class SingleFileEditorTests(unittest.TestCase):
         self.assertIn(b"untouched line\r\n", self.target.read_bytes())
 
     def test_large_file_uses_utf8_byte_size(self):
-        original = "é" * 22_000 + "\ndef target():\n    return 'before'\n"
+        original = "é" * 8_000 + "\ndef target():\n    return 'before'\n"
         old = "def target():\n    return 'before'\n"
         self.assertLess(len(original), editor.MAX_INPUT)
         self.assertGreater(len(original.encode("utf-8")), editor.MAX_INPUT)
