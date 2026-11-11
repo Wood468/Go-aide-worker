@@ -292,5 +292,26 @@ class OptionsBridge(unittest.TestCase):
         with self.assertRaises(launcher.ConfigurationError):
             launcher.read_options(self.path)
 
+
+    def test_artwork_recovery_requires_queue_approval_and_no_edit_or_publish(self):
+        action = "queue_recover_artwork_task"
+        for wrong in (
+            dict(enable_queue=False, enable_edits=False, enable_publishing=False),
+            dict(enable_queue=True, enable_edits=True, enable_publishing=False),
+            dict(enable_queue=True, enable_edits=False, enable_publishing=True),
+        ):
+            self.write(job_action=action, job_prompt="", edit_files="",
+                       gemini_api_key="", github_token="", **wrong)
+            with self.assertRaises(launcher.ConfigurationError):
+                launcher.read_options(self.path)
+        self.write(job_action=action, job_prompt="", enable_queue=True,
+                   enable_edits=False, enable_publishing=False,
+                   gemini_api_key="", github_token="")
+        self.assertEqual(launcher.read_options(self.path)[0], action)
+        self.write(job_action=action, job_prompt="not permitted", enable_queue=True,
+                   enable_edits=False, enable_publishing=False)
+        with self.assertRaises(launcher.ConfigurationError):
+            launcher.read_options(self.path)
+
 if __name__ == "__main__":
     unittest.main()
