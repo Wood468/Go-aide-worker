@@ -8,6 +8,16 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.20: authenticated queue polling and clean unattended shutdown
+
+After the successful source task #565 and the first independent automatic-merge policy release, the next owner-approved task #574 was held **before claiming** with the fixed `github-rate-limit` diagnostic. Inspection verified the underlying queue's `github_read` used public **unauthenticated** GitHub REST calls despite `GITHUB_TOKEN` already being available for publishing; the 10-minute unattended loop and other agents easily exhausted GitHub's low anonymous limit. A controlled stop also exposed a Supervisor `SIGTERM` exit-143 warning because the idle queue did not handle shutdown.
+
+**Fix:** the queue uses its existing configured GitHub token for repository-limited GitHub GET requests, with a fixed API version and strict URL allowlist. An unattended queue refuses missing credentials instead of silently falling back to anonymous reads. Read-only `queue_status` and credential-free one-off retirement continue to work without tokens. The token is **never** logged, included in exception diagnostics, or sent to Gemini editor children. Invalid token/auth gets a fixed `github-auth` diagnostic; real quota exhaustion remains `github-rate-limit`. No new credentials, API permissions, file-edit scopes, or automatic retry mechanisms are introduced.
+
+The long-lived queue installs a minimal `SIGTERM` handler. An idle loop now exits normally and immediately when Home Assistant stops it; if a bounded task is active it finishes/records its single attempt before exiting, avoiding a deliberate arbitrary ledger reset or replay.
+
+**Rollout:** inspect/review full worker PR and pass static/Python + Docker CI, then upgrade HA add-on to v0.5.20 with **all opt-ins OFF**. Verify historical #550/#563 retired and #565 submitted. The still-open app task #574 has both `go-worker-approved` and `go-worker-auto-merge-approved` labels, but remains unclaimed unless a current worker ledger shows otherwise. Check fresh worker/app main and PRs first, then execute exactly one `queue_once` acceptance with its existing credentials; inspect resulting draft and app CI plus independent GitHub policy. On any ambiguous failure, stop/hold for review without replay. Only after completing one accepted cycle, restore the restricted queue loop. Leave actual source/edit permissions and broader auto-merge disabled.
+
 ## v0.5.19: exact one-way retirement of failed DST regression #563
 
 The first new legacy one-file unattended issue after the v0.5.18 recovery, app #563, failed at `edit-single` with the allowlisted Gemini `service` category. The worker correctly entered durable `needs-review`, stopped new dispatch and did not publish a PR. **Do not reapprove/retry #563.**
