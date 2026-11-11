@@ -721,6 +721,69 @@ def retire_failed_banner_cache_task(path=LEDGER, fetch=github_read):
 
 
 
+def retire_failed_two_file_service_task(path=LEDGER, fetch=github_read):
+    """Close out exact failed synthetic issue #531; never retry or publish."""
+    state = read_ledger(path)
+    previous = state.get("531")
+    if (not isinstance(previous, dict) or previous.get("state") != "needs-review"
+            or previous.get("attempts") != 1 or previous.get("failure_stage") != "edit-source" or previous.get("failure_category") != "service" or "pr" in previous):
+        raise QueueError("Exact two-file-service task retirement not eligible")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/531")
+    if not isinstance(issue, dict):
+        raise QueueError("Two-file service task issue unavailable")
+    body = issue.get("body")
+    parts = TASK_RE.findall(body) if isinstance(body, str) else []
+    try:
+        task = json.loads(parts[0]) if len(parts) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    labels = issue.get("labels")
+    expected = "test/offline-event-two-file-service.test.mjs"
+    if (issue.get("number") != 531 or issue.get("state") != "open"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or issue.get("title") != "[GO-WORKER] v0.5.16 disposable two-file Today source/test acceptance pilot"
+            or task.get("version") != 2 or task.get("paths") != expected or set(task) != {"version", "paths", "instruction"}
+            or not isinstance(task.get("instruction"), str)
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)):
+        raise QueueError("Exact two-file-service task identity or approval changed")
+    issued = issue.get("created_at")
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
+        raise QueueError("Pilot issue creation time unavailable")
+    verified_cutoff = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Invalid pilot PR history")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Malformed pilot PR history")
+            created = pr.get("created_at")
+            if not isinstance(created, str) or not re.fullmatch(iso_utc, created):
+                raise QueueError("Pilot PR creation time unavailable")
+            if created < issued:
+                verified_cutoff = True
+                break
+            if ("Worker: issue #531" in str(pr.get("title") or "")
+                    or "Source task: #531" in str(pr.get("body") or "")):
+                raise QueueError("Two-file service task may already have a published PR")
+        if verified_cutoff or len(prs) < 5:
+            verified_cutoff = True
+            break
+    if not verified_cutoff:
+        raise QueueError("Cannot verify complete two-file-service task PR history")
+    state["531"] = {"state": "retired", "attempts": 1, "reason": "failed-two-file-service-pilot"}
+    save_ledger(state, path)
+    print("Failed two-file-service task #531 retired without retry or PR", flush=True)
+    return True
+
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -872,7 +935,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -907,6 +970,8 @@ def main():
             retire_failed_four_file_pilot()
         elif mode == "retire_banner_cache_task":
             retire_failed_banner_cache_task()
+        elif mode == "retire_two_file_service_task":
+            retire_failed_two_file_service_task()
         else:
             once(scan=(mode == "scan"))
 
