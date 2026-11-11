@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 P=Path(__file__).resolve().parents[1]/"addon/queue_worker.py"
+sys.path.insert(0, str(P.parent))
 spec=importlib.util.spec_from_file_location("queue_worker",P)
 q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
