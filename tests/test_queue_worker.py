@@ -1083,4 +1083,36 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertNotIn("SECRET",output)
             self.assertNotIn("GITHUB_TOKEN",output)
 
+
+    def test_queue_preclaim_diagnostics_never_emit_exception_details(self):
+        examples={
+            "GitHub read rate limit reached":"github-rate-limit",
+            "Queue request unavailable":"github-unavailable",
+            "Queue response exceeds limit":"github-response-size",
+            "Invalid issue list":"issue-list-invalid",
+            "Unsafe queue ledger":"ledger-invalid",
+            "Another queue worker holds the lock":"queue-locked",
+            "UNTRUSTED TOKEN=secret and arbitrary response":"other",
+        }
+        for message, expected in examples.items():
+            with self.subTest(expected=expected):
+                c=q.safe_preclaim_category(q.QueueError(message))
+                self.assertEqual(c,expected)
+                self.assertNotIn("secret",c)
+        self.assertEqual(q.safe_preclaim_category(ValueError("TOKEN=secret")),"other")
+
+    def test_public_github_quota_is_distinguished_without_response_content(self):
+        from urllib.error import HTTPError
+        def fail(code,remaining=None):
+            headers={} if remaining is None else {"X-RateLimit-Remaining":remaining}
+            def opener(req,timeout):
+                raise HTTPError(req.full_url,code,"secret response",headers,None)
+            with self.assertRaises(q.QueueError) as error:
+                q.github_read(q.ISSUES_URL, opener)
+            return str(error.exception)
+        self.assertEqual(fail(429),"GitHub read rate limit reached")
+        self.assertEqual(fail(403,"0"),"GitHub read rate limit reached")
+        self.assertEqual(fail(403,"40"),"Queue request unavailable")
+        self.assertEqual(fail(500),"Queue request unavailable")
+
 if __name__=="__main__":unittest.main()
