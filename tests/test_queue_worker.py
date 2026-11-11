@@ -665,4 +665,67 @@ class WorkerQueueTests(unittest.TestCase):
                             self.assertEqual(published,[])
                             self.assertEqual(q.read_ledger(ledger)["600"]["state"],"needs-review")
 
+
+    def test_failed_two_file_pilot_retirement_is_one_way_and_scope_bound(self):
+        record=issue(number=497, path="test/today-logic.test.mjs")
+        record["title"]="[GO-WORKER] v0.5.8 harmless source-plus-test draft PR pilot"
+        record["body"]="GO_WORKER_TASK_JSON:"+json.dumps({
+            "version":2,
+            "paths":["public/today.js","test/today-logic.test.mjs"],
+            "instruction":"Add one harmless test-only comment to each file."})
+        record["labels"]=[]
+        def scenario(change=None, ledger_override=None):
+            calls=[]
+            remote={**record,**(change or {}).get("issue",{})}
+            def fetch(url):
+                calls.append(url)
+                if url.endswith("/issues/497"):
+                    return remote
+                if "/pulls?" in url:
+                    return (change or {}).get("history",[])
+                self.fail("Unexpected remote endpoint")
+            with tempfile.TemporaryDirectory() as folder:
+                ledger=Path(folder)/"ledger.json"
+                initial={"497":ledger_override or {"state":"needs-review","attempts":1},
+                         "470":{"state":"submitted","pr":473}}
+                q.save_ledger(initial,ledger)
+                if change or ledger_override:
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_two_file_pilot(ledger,fetch)
+                    self.assertEqual(q.read_ledger(ledger),initial)
+                else:
+                    self.assertTrue(q.retire_failed_two_file_pilot(ledger,fetch))
+                    state=q.read_ledger(ledger)
+                    self.assertEqual(state["497"],{"state":"retired",
+                                                     "attempts":1,
+                                                     "reason":"discarded-pilot"})
+                    self.assertEqual(state["470"],initial["470"])
+                    self.assertFalse(q.approved_for_dispatch(
+                        {"issue":497,"version":2,
+                         "paths":["public/today.js","test/today-logic.test.mjs"],
+                         "instruction":"do not replay"},state))
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_two_file_pilot(ledger,fetch)
+            return calls
+        self.assertEqual(len(scenario()),2)
+        for changed in (
+            {"issue":{"labels":[{"name":"go-worker-approved"}]}},
+            {"issue":{"user":{"login":"another"}}},
+            {"issue":{"state":"closed"}},
+            {"issue":{"title":"[GO-WORKER] another task"}},
+            {"issue":{"body":"GO_WORKER_TASK_JSON:{}"}},
+            {"history":[{"title":"Worker: issue #497 draft changes",
+                         "body":"Source task: #497",
+                         "created_at":"2026-11-11T05:58:00Z"}]},
+            {"history":[{"title":"Unrelated", "body":"",
+                         "created_at":"invalid"}]},
+        ):
+            with self.subTest(change=changed):
+                scenario(change=changed)
+        for before in ({"state":"needs-review","attempts":2},
+                       {"state":"retired","attempts":1},
+                       {"state":"needs-review","attempts":1,"pr":600}):
+            with self.subTest(record=before):
+                scenario(ledger_override=before)
+
 if __name__=="__main__":unittest.main()
