@@ -1,5 +1,5 @@
 name: "GO Aider Worker (Prototype)"
-version: "0.5.14"
+version: "0.5.15"
 slug: "go_aider_worker"
 description: "Isolated, one-job-at-a-time Gemini/Aider worker; experimental"
 url: "https://github.com/Wood468/Go-aide-worker"
@@ -26,7 +26,7 @@ options:
   gemini_api_key: ""
   github_token: ""
 schema:
-  job_action: "list(idle|prepare|refresh|inspect|test|edit|direct_edit|verify|publish|publish_test|probe|queue_scan|queue_once|queue_loop|queue_status|queue_recover_pilot|queue_recover_code_pilot|queue_ack_code_pilot|queue_recover_artwork_task|queue_retire_artwork_task|queue_retire_two_file_pilot|queue_retire_venue_clock_task|queue_retire_four_file_pilot)"
+  job_action: "list(idle|prepare|refresh|inspect|test|edit|direct_edit|verify|publish|publish_test|probe|queue_scan|queue_once|queue_loop|queue_status|queue_recover_pilot|queue_recover_code_pilot|queue_ack_code_pilot|queue_recover_artwork_task|queue_retire_artwork_task|queue_retire_two_file_pilot|queue_retire_venue_clock_task|queue_retire_four_file_pilot|queue_retire_banner_cache_task)"
   job_prompt: str
   edit_files: str
   enable_edits: bool
