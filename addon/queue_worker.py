@@ -848,7 +848,7 @@ def retire_failed_places_publish_task(path=LEDGER, fetch=github_read):
             or not task["instruction"].strip()):
         raise QueueError("Places task identity, approval or contract changed")
 
-    iso = r"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z"
+    iso = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
     created = issue.get("created_at")
     if not isinstance(created, str) or not re.fullmatch(iso, created):
         raise QueueError("Places task issue timestamp unavailable")
