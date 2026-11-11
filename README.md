@@ -8,6 +8,14 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.21: reliable, secret-safe one-shot results
+
+The restricted `queue_once` action previously returned exit code zero for both a successful draft submission and an ordinary no-op. Its child stdout was private, leaving Home Assistant unable to distinguish outcomes without a separate ledger query. This caused ambiguous run reports during the verified issue #574 → draft PR #578 pilot.
+
+One-shot runs now print only a **fixed, bounded, allowlisted disposition**: submitted issue/PR numbers, no eligible task, paused for review, or unknown (inspect durable ledger). The parent reads at most the final 4,096 bytes of private queue output, never echoes raw GitHub responses, Gemini output, task text or credentials, and retains fixed-category error diagnostics. The outcome line is informational **only**; it cannot authorise another attempt, mark a task completed, merge or deploy. Continue independently verifying GitHub PR state and the durable queue ledger after any submission.
+
+This release adds regression coverage for safe status-only parsing, secrets exclusion, no-op and repeated/ambiguous output. It does not change queue scope, authentication, approval rules or automatic merging; app PR #578 remains governed independently by GitHub Actions and full CI.
+
 ## v0.5.20: authenticated queue polling and clean unattended shutdown
 
 After the successful source task #565 and the first independent automatic-merge policy release, the next owner-approved task #574 was held **before claiming** with the fixed `github-rate-limit` diagnostic. Inspection verified the underlying queue's `github_read` used public **unauthenticated** GitHub REST calls despite `GITHUB_TOKEN` already being available for publishing; the 10-minute unattended loop and other agents easily exhausted GitHub's low anonymous limit. A controlled stop also exposed a Supervisor `SIGTERM` exit-143 warning because the idle queue did not handle shutdown.

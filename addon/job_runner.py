@@ -182,6 +182,39 @@ def safe_queue_diagnostic(raw):
     return matches[0] if len(matches) == 1 else None
 
 
+def safe_queue_outcome(raw):
+    """Display-only queue result: fixed statuses, no raw child/model output.
+
+    A successful process exit also means 'no task' or 'paused for review'.
+    This text never authorises retries or merges; the durable queue ledger
+    and GitHub PR must be checked independently for a confirmed submission.
+    """
+    if not isinstance(raw, bytes) or len(raw) > 4096:
+        return "unknown (inspect durable ledger)"
+    submissions = []
+    markers = []
+    for line in raw.splitlines():
+        found = re.fullmatch(
+            rb"Submitted issue #([1-9][0-9]{0,9}) as draft PR #([1-9][0-9]{0,9})",
+            line,
+        )
+        if found:
+            submissions.append((int(found[1]), int(found[2])))
+            markers.append("submitted")
+        elif line == b"Queue paused for review of previous task":
+            markers.append("review")
+        elif line == b"No approved unprocessed tasks":
+            markers.append("empty")
+    if markers == ["submitted"] and len(submissions) == 1:
+        issue, pr = submissions[0]
+        return "submitted issue #" + str(issue) + " as draft PR #" + str(pr) + " (verify GitHub)"
+    if markers == ["review"]:
+        return "paused for prior review"
+    if markers == ["empty"]:
+        return "no eligible task"
+    return "unknown (inspect durable ledger)"
+
+
 def count_changes(workspace):
     """Return only a count of dirty paths, never filenames or contents."""
     environment = {"PATH": "/usr/bin:/bin", "HOME": "/home/coder",
@@ -257,11 +290,19 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
                 pass
             process.wait()
             raise JobError("Job timed out") from exc
-        if action == "queue_once" and return_code:
-            private_output.seek(0)
-            category = safe_queue_diagnostic(private_output.read(4097))
-            if category is not None:
-                print("GO Aider queue diagnostic: " + category, flush=True)
+        if action == "queue_once":
+            # Read only a bounded TAIL. The one-shot queue can log multiple
+            # historical ledger records before reaching its final outcome.
+            private_output.seek(0, os.SEEK_END)
+            size = min(private_output.tell(), 4096)
+            private_output.seek(-size, os.SEEK_END)
+            private_tail = private_output.read(size)
+            if return_code:
+                category = safe_queue_diagnostic(private_tail)
+                if category is not None:
+                    print("GO Aider queue diagnostic: " + category, flush=True)
+            else:
+                print("GO Aider queue outcome: " + safe_queue_outcome(private_tail), flush=True)
         if action == "edit":
             private_output.seek(0)
             category = classify_edit_output(private_output.read(200_000))

@@ -360,5 +360,78 @@ class RestrictedJobs(unittest.TestCase):
         self.assertEqual(runner.safe_queue_diagnostic(
             b"WORKER_QUEUE_DIAGNOSTIC:ledger-invalid\n"),"ledger-invalid")
 
+
+    def test_queue_once_outcome_is_fixed_and_never_leaks_untrusted_output(self):
+        self.assertEqual(runner.safe_queue_outcome(
+            b"Worker queue #550: retired\nSubmitted issue #574 as draft PR #578\n"),
+            "submitted issue #574 as draft PR #578 (verify GitHub)")
+        self.assertEqual(runner.safe_queue_outcome(
+            b"Queue paused for review of previous task\n"), "paused for prior review")
+        self.assertEqual(runner.safe_queue_outcome(
+            b"No approved unprocessed tasks\n"), "no eligible task")
+        for bad in (b"private-secret=SECRET_VALUE\n",
+                    b"Submitted issue #574 as draft PR #578\n"
+                    b"No approved unprocessed tasks\n",
+                    b"Submitted issue #574 as draft PR #578\n"
+                    b"Submitted issue #574 as draft PR #578\n",
+                    b"Submitted issue #574 as draft PR #not_a_number\n",
+                    b"Submitted issue #574 as draft PR #578 extra\n",
+                    b"x" * 4097):
+            self.assertEqual(runner.safe_queue_outcome(bad),
+                             "unknown (inspect durable ledger)")
+        self.assertNotIn("SECRET_VALUE",
+                         runner.safe_queue_outcome(b"private-secret=SECRET_VALUE"))
+
+    def test_queue_once_success_logs_safe_result_not_model_or_token(self):
+        import json
+        from io import StringIO
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as folder:
+            job = Path(folder) / "job.json"
+            job.write_text(json.dumps(self.job("queue_once")))
+            def fake_popen(_command, **kwargs):
+                # Deliberately include >4KB of preceding ledger lines to
+                # prove the wrapper captures only the final bounded tail.
+                kwargs["stdout"].write(b"Sensitive earlier response TOKEN_X\n" +
+                    b"Worker queue #500: submitted\n" * 250 +
+                    b"Submitted issue #574 as draft PR #578\n")
+                process = MagicMock()
+                process.wait.return_value = 0
+                return process
+            with (patch.dict(os.environ, {"ENABLE_QUEUE": "true",
+                                           "GEMINI_API_KEY": "gemini-private",
+                                           "GITHUB_TOKEN": "github-private"}),
+                  patch.object(runner.subprocess, "Popen", side_effect=fake_popen),
+                  redirect_stdout(StringIO()) as output):
+                self.assertEqual(runner.run(job, self.workspace), 0)
+            visible = output.getvalue()
+            self.assertIn("GO Aider queue outcome: submitted issue #574 as draft PR #578",
+                          visible)
+            self.assertNotIn("Sensitive", visible)
+            self.assertNotIn("TOKEN_X", visible)
+            self.assertNotIn("github-private", visible)
+            self.assertNotIn("gemini-private", visible)
+
+    def test_queue_once_noop_does_not_claim_submission(self):
+        import json
+        from io import StringIO
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as folder:
+            job = Path(folder) / "job.json"
+            job.write_text(json.dumps(self.job("queue_once")))
+            def fake_popen(_command, **kwargs):
+                kwargs["stdout"].write(b"No approved unprocessed tasks\n")
+                process = MagicMock()
+                process.wait.return_value = 0
+                return process
+            with (patch.dict(os.environ, {"ENABLE_QUEUE": "true",
+                                           "GEMINI_API_KEY": "gemini-private",
+                                           "GITHUB_TOKEN": "github-private"}),
+                  patch.object(runner.subprocess, "Popen", side_effect=fake_popen),
+                  redirect_stdout(StringIO()) as output):
+                self.assertEqual(runner.run(job, self.workspace), 0)
+            self.assertIn("GO Aider queue outcome: no eligible task", output.getvalue())
+            self.assertNotIn("submitted", output.getvalue())
+
 if __name__ == "__main__":
     unittest.main()
