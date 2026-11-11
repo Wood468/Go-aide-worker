@@ -625,7 +625,7 @@ class WorkerQueueTests(unittest.TestCase):
                             relative=env["EDIT_FILES"]
                             self.assertNotIn("GITHUB_TOKEN", env)
                             touched.append(relative)
-                            if failure != "none" or relative == pair[0]:
+                            if failure != "partial" or relative == pair[0]:
                                 (checkout/relative).write_text("const updated = true;\n")
                             if failure == "approval-changed" and relative == pair[1]:
                                 current["labels"]=[]
