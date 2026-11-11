@@ -1257,6 +1257,7 @@ class WorkerQueueTests(unittest.TestCase):
 
     def test_places_publish_retirement_is_exact_credential_free_and_one_way(self):
         item = issue(number=550, labels=[], path="test/places.test.mjs")
+        item["labels"] = []  # Empty list must not inherit fixture's default approval.
         item["title"] = "[GO-WORKER] Reject impossible Places event and provenance calendar dates"
         task_json = {"path": "test/places.test.mjs",
                      "instruction": "Validate real Gregorian dates in existing test only."}
