@@ -333,4 +333,48 @@ class SingleFileEditorTests(unittest.TestCase):
             pause.assert_not_called()
         self.assertEqual(len(calls),1)
 
+
+    def test_service_failure_keeps_original_bytes_and_hides_provider_details(self):
+        from urllib.error import HTTPError
+        original = "original regression assertions\\n"
+        self.target.write_text(original)
+        calls = []
+        def unavailable(req, timeout):
+            calls.append(1)
+            raise HTTPError(req.full_url, 503, "PRIVATE_PROVIDER_DIAGNOSTIC", {}, None)
+        with (patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}),
+              patch.object(editor.time, "sleep", return_value=None)):
+            with self.assertRaises(editor.DirectEditError) as raised:
+                editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"], "add assertion",
+                            "PRIVATE_TEST_KEY",
+                            generator=lambda key, prompt, path, content:
+                                editor.generate(key, prompt, path, content, unavailable))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.target.read_text(), original)
+        self.assertNotIn("PRIVATE_PROVIDER_DIAGNOSTIC", str(raised.exception))
+        self.assertNotIn("PRIVATE_TEST_KEY", str(raised.exception))
+        self.assertEqual(list(self.folder.glob(".worker-edit-*")), [])
+
+    def test_timeout_and_connection_failure_never_retry_or_modify_file(self):
+        from urllib.error import URLError
+        original = "existing test remains unchanged\\n"
+        self.target.write_text(original)
+        for failure in (TimeoutError("PRIVATE_TIMEOUT"), URLError("PRIVATE_NETWORK")):
+            with self.subTest(failure=type(failure).__name__):
+                calls = []
+                def unavailable(req, timeout):
+                    calls.append(1)
+                    raise failure
+                with (patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}),
+                      patch.object(editor.time, "sleep") as pause):
+                    with self.assertRaises(editor.DirectEditError) as raised:
+                        editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"], "add assertion",
+                                    "PRIVATE_TEST_KEY",
+                                    generator=lambda key, prompt, path, content:
+                                        editor.generate(key, prompt, path, content, unavailable))
+                    pause.assert_not_called()
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(self.target.read_text(), original)
+                self.assertNotIn("PRIVATE_", str(raised.exception))
+
 if __name__=="__main__":unittest.main()
