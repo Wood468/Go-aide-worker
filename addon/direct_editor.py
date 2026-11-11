@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 
@@ -96,21 +97,29 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
     req = urllib.request.Request(MODEL_URL, data=body, method="POST", headers={
         "x-goog-api-key": key, "Content-Type": "application/json",
         "User-Agent": "go-aider-single-file-editor"})
-    try:
-        with opener(req, timeout=45) as response:
-            if response.status != 200:
-                raise DirectEditError("Gemini request failed")
-            raw_result = response.read(MAX_OUTPUT + 1)
-            if len(raw_result) > MAX_OUTPUT:
-                raise DirectEditError("Gemini response exceeds limit")
-            result = json.loads(raw_result)
-    except urllib.error.HTTPError as e:
-        category = ("auth" if e.code in (401, 403) else
-                    "quota" if e.code == 429 else
-                    "model" if e.code in (400, 404) else "service")
-        raise DirectEditError("Gemini request rejected: " + category) from None
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
-        raise DirectEditError("Gemini connection or response error") from None
+    # At most one transport retry, and ONLY for an HTTP 5xx service outage.
+    # Never retry quota/auth/model errors, timeouts or malformed model output.
+    # No file mutation happens until after a complete validated JSON reply.
+    for attempt in range(2):
+        try:
+            with opener(req, timeout=45) as response:
+                if response.status != 200:
+                    raise DirectEditError("Gemini request failed")
+                raw_result = response.read(MAX_OUTPUT + 1)
+                if len(raw_result) > MAX_OUTPUT:
+                    raise DirectEditError("Gemini response exceeds limit")
+                result = json.loads(raw_result)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (500, 502, 503, 504) and attempt == 0:
+                time.sleep(1)
+                continue
+            category = ("auth" if e.code in (401, 403) else
+                        "quota" if e.code == 429 else
+                        "model" if e.code in (400, 404) else "service")
+            raise DirectEditError("Gemini request rejected: " + category) from None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+            raise DirectEditError("Gemini connection or response error") from None
     try:
         candidate = result["candidates"][0]["content"]["parts"][0]["text"]
         updated = json.loads(candidate)
