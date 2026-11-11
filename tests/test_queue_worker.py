@@ -1496,4 +1496,110 @@ class WorkerQueueTests(unittest.TestCase):
                           "commit": {"sha": "a" * 40}} for n in range(100)]
         scenario(branches=full_branches, expect_failure=True)
 
+
+    def test_authenticated_queue_read_uses_existing_token_without_leaking_it(self):
+        from io import BytesIO, StringIO
+        from contextlib import redirect_stdout, redirect_stderr
+        inspected = []
+        def opener(req, timeout):
+            inspected.append((req.full_url, dict(req.header_items()), timeout))
+            return BytesIO(b'[]')
+        output = StringIO()
+        with (patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_FAKE_TEST_NEVER_LOG",
+                                     "ENABLE_QUEUE": "true"}, clear=True),
+              redirect_stdout(output), redirect_stderr(output)):
+            self.assertEqual(q.github_read(q.ISSUES_URL, opener), [])
+        self.assertEqual(len(inspected), 1)
+        url, headers, timeout = inspected[0]
+        self.assertEqual(url, q.ISSUES_URL)
+        self.assertEqual(headers["Authorization"], "Bearer ghp_FAKE_TEST_NEVER_LOG")
+        self.assertEqual(timeout, 25)
+        self.assertNotIn("FAKE_TEST", output.getvalue())
+
+    def test_queue_read_requires_existing_credential_but_retirement_is_read_only(self):
+        from io import BytesIO
+        calls = []
+        def opener(req, timeout):
+            calls.append(dict(req.header_items()))
+            return BytesIO(b'[]')
+        with patch.dict(os.environ, {"ENABLE_QUEUE": "true",
+                                     "GITHUB_TOKEN": ""}, clear=True):
+            with self.assertRaisesRegex(q.QueueError, "^GitHub authentication required$"):
+                q.github_read(q.ISSUES_URL, opener)
+        self.assertEqual(calls, [])
+        # Credential-free exact one-time recovery actions remain supported.
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(q.github_read(q.ISSUES_URL, opener), [])
+        self.assertNotIn("Authorization", calls[-1])
+
+    def test_authenticated_read_fails_closed_on_bad_urls_or_tokens(self):
+        from io import BytesIO
+        invoked = []
+        def opener(req, timeout):
+            invoked.append(req.full_url)
+            return BytesIO(b'[]')
+        with patch.dict(os.environ, {"ENABLE_QUEUE": "true",
+                                     "GITHUB_TOKEN": "ghp_FAKE_TOKEN"}, clear=True):
+            for bad in ("https://evil.example/issues",
+                        "https://api.github.com/repos/Wood468/not-ours/issues",
+                        q.ISSUES_URL + "#injected",
+                        q.ISSUES_URL + "\nInjection: bad"):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(q.QueueError):
+                        q.github_read(bad, opener)
+        with patch.dict(os.environ, {"ENABLE_QUEUE": "true",
+                                     "GITHUB_TOKEN": "ghp_FAKE_TOKEN\r\nx: evil"}, clear=True):
+            with self.assertRaisesRegex(q.QueueError, "^Queue request unavailable$"):
+                q.github_read(q.ISSUES_URL, opener)
+        self.assertEqual(invoked, [])
+
+    def test_authenticated_queue_errors_have_fixed_safe_categories(self):
+        from urllib.error import HTTPError
+        def fail(code, headers=None):
+            def opener(req, timeout):
+                raise HTTPError(req.full_url, code, "NEVER_LOG_FAKE_SECRET",
+                                headers or {}, None)
+            with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_FAKE_SECRET",
+                                         "ENABLE_QUEUE": "true"}, clear=True):
+                with self.assertRaises(q.QueueError) as caught:
+                    q.github_read(q.ISSUES_URL, opener)
+                category = q.safe_preclaim_category(caught.exception)
+                self.assertNotIn("FAKE_SECRET", str(caught.exception))
+                return category
+        self.assertEqual(fail(401), "github-auth")
+        self.assertEqual(fail(403, {"X-RateLimit-Remaining": "99"}), "github-auth")
+        self.assertEqual(fail(403, {"X-RateLimit-Remaining": "0"}), "github-rate-limit")
+        self.assertEqual(fail(429), "github-rate-limit")
+
+    def test_idle_queue_sigterm_drains_once_and_exits_cleanly(self):
+        from io import StringIO
+        from contextlib import redirect_stdout
+        import signal
+        with tempfile.TemporaryDirectory() as folder:
+            seen = []
+            handler = []
+            class FakeEvent:
+                def __init__(self): self.stopped = False
+                def is_set(self): return self.stopped
+                def set(self): self.stopped = True
+                def wait(self, seconds):
+                    seen.append(("wait", seconds))
+                    handler[-1](signal.SIGTERM, None)
+            def install(signum, callback):
+                self.assertEqual(signum, signal.SIGTERM)
+                handler.append(callback)
+            def once(*, unattended):
+                self.assertTrue(unattended)
+                seen.append(("once",))
+                return 0
+            with (patch.object(q, "LOCK", Path(folder) / ".queue.lock"),
+                  patch.object(q.threading, "Event", FakeEvent),
+                  patch.object(q.signal, "signal", side_effect=install),
+                  patch.object(q, "once", side_effect=once),
+                  patch.object(sys, "argv", ["queue_worker.py", "loop"]),
+                  patch("sys.stdout", new_callable=StringIO) as output):
+                q.main()
+            self.assertEqual(seen, [("once",), ("wait", 600)])
+            self.assertIn("Approved queue stopped cleanly", output.getvalue())
+
 if __name__=="__main__":unittest.main()
