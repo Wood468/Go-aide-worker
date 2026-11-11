@@ -11,7 +11,7 @@ import urllib.request
 import job_runner
 
 MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
-MAX_INPUT = 40_000  # Small files retain the existing complete-replacement response.
+MAX_INPUT = 12_000  # Larger text uses exact patches, avoiding oversized full-file model replies.
 MAX_FILE_BYTES = 100_000  # Never exceed the independent publisher's per-file cap.
 MAX_OUTPUT = 100_000
 MAX_REPLACEMENTS = 3
