@@ -269,7 +269,8 @@ class WorkerQueueTests(unittest.TestCase):
                               state, runner=lambda *_: (_ for _ in ()).throw(
                                   q.QueueError("controlled failure")))
             self.assertEqual(state["462"],
-                             {"state": "needs-review", "attempts": 2})
+                             {"state": "needs-review", "attempts": 2,
+                              "failure_stage": "refresh"})
             self.assertFalse(q.approved_for_dispatch(
                 q.parse_task(issue(number=462,
                                    path="docs/worker-task-queue-pilot.md")),
