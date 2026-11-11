@@ -1330,4 +1330,170 @@ class WorkerQueueTests(unittest.TestCase):
         attempt(ledger_change={"state": "needs-review", "attempts": 1,
                                "failure_stage": "publish", "pr": 800}, should_fail=True)
 
+
+    def test_rotation_service_563_retirement_fails_closed_without_retry(self):
+        item = issue(number=563, path="test/event-encounter-rotations.test.mjs")
+        item["title"] = "[GO-WORKER] Unattended v1 regression: venue-local habitat DST boundaries"
+        item["created_at"] = "2026-11-11T14:31:26Z"
+        item["labels"] = []  # Must be deapproved; fixture defaults to approved.
+        item["body"] = "GO_WORKER_TASK_JSON:" + json.dumps({
+            "path": "test/event-encounter-rotations.test.mjs",
+            "instruction": q.RETIRED_563_INSTRUCTION})
+        expected = {"state": "needs-review", "attempts": 1,
+                    "failure_stage": "edit-single", "failure_category": "service"}
+        baseline = {"563": expected, "550": {"state": "retired", "attempts": 1,
+                    "reason": "reconciled-failed-places-publish"},
+                    "539": {"state": "submitted", "attempts": 1, "pr": 541}}
+        sha = "b" * 40
+        worker_branch = {"name": "worker/review-abcdef123456",
+                         "commit": {"sha": sha}}
+        safe_file = [{"filename": "test/attendance-classification.test.mjs"}]
+        unsafe_file = [{"filename": "test/event-encounter-rotations.test.mjs"}]
+        normal_comparison = {"status": "ahead", "total_commits": 2, "ahead_by": 2,
+                             "commits": [{"sha": "a" * 40}, {"sha": sha}],
+                             "files": safe_file}
+
+        def scenario(*, changes=None, record=None, prs=None, branches=None,
+                     tip_date="2026-11-11T15:00:00Z",
+                     comparison=None, remote_files=None, failed_url=None,
+                     expect_failure=False):
+            with tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                initial = {**baseline, "563": record if record is not None else expected}
+                q.save_ledger(initial, ledger)
+                seen = []
+                def fetch(url):
+                    seen.append(url)
+                    if failed_url and failed_url in url:
+                        raise q.QueueError("Queue request unavailable")
+                    if url.endswith("/issues/563"):
+                        return {**item, **(changes or {})}
+                    if "/pulls?state=all" in url:
+                        return prs if prs is not None else []
+                    if "/pulls/" in url and "/files?" in url:
+                        return remote_files if remote_files is not None else safe_file
+                    if "/branches?per_page=100" in url:
+                        return branches if branches is not None else []
+                    if url.endswith("/commits/" + sha):
+                        return {"sha": sha,
+                                "commit": {"committer": {"date": tip_date}}}
+                    if "/compare/main..." in url:
+                        return comparison if comparison is not None else normal_comparison
+                    self.fail("Unexpected read endpoint")
+                from io import StringIO
+                with patch("sys.stdout", new_callable=StringIO) as log:
+                    if expect_failure:
+                        with self.assertRaises(q.QueueError):
+                            q.retire_failed_rotation_service_task(ledger, fetch)
+                        self.assertEqual(q.read_ledger(ledger), initial)
+                    else:
+                        self.assertTrue(q.retire_failed_rotation_service_task(ledger, fetch))
+                        actual = q.read_ledger(ledger)
+                        self.assertEqual(actual["550"], initial["550"])
+                        self.assertEqual(actual["539"], initial["539"])
+                        self.assertEqual(actual["563"],
+                                         {"state": "retired", "attempts": 1,
+                                          "reason": "failed-rotation-edit-service-no-retry"})
+                        self.assertEqual(set(actual), set(initial))
+                        self.assertIn("safely retired without retry or PR", log.getvalue())
+                        with self.assertRaises(q.QueueError):
+                            q.retire_failed_rotation_service_task(ledger, fetch)
+                        self.assertFalse(q.approved_for_dispatch({
+                            "issue": 563, "path": "test/event-encounter-rotations.test.mjs",
+                            "instruction": q.RETIRED_563_INSTRUCTION}, actual))
+                return seen
+
+        # No existing branch/PR; existing old branch tip predates task.
+        scenario()
+        seen = scenario(branches=[worker_branch],
+                        tip_date="2026-11-11T12:20:00Z")
+        self.assertFalse(any("/compare/" in x for x in seen))
+        # New worker branch is safe only if full compare is complete and
+        # no ancestor commit changed the permitted file.
+        seen = scenario(branches=[worker_branch])
+        self.assertTrue(any("/compare/main..." in x for x in seen))
+
+        for change in (
+            {"labels": [{"name": "go-worker-approved"}]},
+            {"labels": "go-worker-approved"},
+            {"state": "closed"},
+            {"number": 564},
+            {"user": {"login": "another-owner"}},
+            {"title": "Unexpected changed task"},
+            {"body": "GO_WORKER_TASK_JSON:{}"},
+            {"body": item["body"].replace("Clone", "Mutate")},
+            {"body": item["body"] + "\n" + item["body"]},
+            {"created_at": "yesterday"},
+        ):
+            with self.subTest(identity=change):
+                scenario(changes=change, expect_failure=True)
+        for invalid in (
+            {"state": "needs-review", "attempts": 2,
+             "failure_stage": "edit-single", "failure_category": "service"},
+            {"state": "needs-review", "attempts": 1,
+             "failure_stage": "edit-single", "failure_category": "quota"},
+            {"state": "needs-review", "attempts": 1,
+             "failure_stage": "publish", "failure_category": "service"},
+            {"state": "needs-review", "attempts": 1,
+             "failure_stage": "edit-single", "failure_category": "service", "pr": 600},
+            {"state": "submitted", "pr": 600},
+            {"state": "retired", "attempts": 1},
+        ):
+            with self.subTest(ledger=invalid):
+                scenario(record=invalid, expect_failure=True)
+
+        # Published worker PR, including a misleading title, is never ignored.
+        for pr in (
+            {"number": 800, "created_at": "2026-11-11T14:40:00Z",
+             "title": "Worker: issue #563 draft changes",
+             "body": "Source task: #563", "head": {"ref": "worker/review-abcdef123456"}},
+            {"number": 801, "created_at": "2026-11-11T14:40:00Z",
+             "title": "Other task", "body": "",
+             "head": {"ref": "worker/review-abcdef123456"}},
+        ):
+            with self.subTest(pr=pr["number"]):
+                scenario(prs=[pr],
+                         remote_files=unsafe_file,
+                         expect_failure=True)
+        scenario(prs=[{"number": 800, "created_at": "2026-11-11T14:40:00Z",
+                       "title": "Unrelated", "body": "", "head": {}}],
+                 expect_failure=True)
+
+        # Complete branch comparison must catch a first-commit task edit
+        # hidden by an unrelated second tip commit.
+        scenario(branches=[worker_branch],
+                 comparison={**normal_comparison, "files": unsafe_file},
+                 expect_failure=True)
+        for broken in (
+            {**normal_comparison, "files": None},
+            {**normal_comparison, "total_commits": 3},
+            {**normal_comparison, "commits": [{"sha": sha}]},
+            {**normal_comparison, "status": "behind"},
+            {**normal_comparison, "files": safe_file * 300},
+        ):
+            with self.subTest(comparison=broken.get("status")):
+                scenario(branches=[worker_branch], comparison=broken,
+                         expect_failure=True)
+        scenario(branches=[{"name": "worker/review-bad",
+                            "commit": {"sha": sha}}], expect_failure=True)
+        scenario(branches=[worker_branch],
+                 tip_date="not-a-timestamp", expect_failure=True)
+        scenario(branches=[worker_branch], failed_url="/compare/main...",
+                 expect_failure=True)
+        scenario(failed_url="/issues/563", expect_failure=True)
+        scenario(failed_url="/pulls?state=all", expect_failure=True)
+        scenario(failed_url="/branches?per_page=100", expect_failure=True)
+
+        # Paginations hitting the configured cap must not silently claim
+        # history completeness, even if all individual records are plausible.
+        future_prs = [{"number": 900 + n,
+                       "created_at": "2026-11-11T15:00:00Z",
+                       "head": {"ref": "other"},
+                       "title": "Unrelated", "body": ""} for n in range(5)]
+        # This fixture repeats PR IDs and must be rejected as incomplete.
+        scenario(prs=future_prs, expect_failure=True)
+        full_branches = [{"name": "test-branch-" + str(n),
+                          "commit": {"sha": "a" * 40}} for n in range(100)]
+        scenario(branches=full_branches, expect_failure=True)
+
 if __name__=="__main__":unittest.main()
