@@ -924,4 +924,38 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertNotIn("GITHUB_TOKEN",visible)
             self.assertIn("Worker queue #999: needs-review",visible)
 
+
+    def test_unattended_queue_never_dispatches_versioned_source_tasks(self):
+        def vtask(number,version,paths):
+            item=issue(number=number)
+            item["body"]="GO_WORKER_TASK_JSON:"+json.dumps({
+                "version":version,"paths":paths,
+                "instruction":"Edit exactly the authorised source and regression files."})
+            self.assertEqual(q.parse_task(item)["version"],version)
+            return item
+        source_pair=["public/today.js","test/today-logic.test.mjs"]
+        four=source_pair+["public/index.html","public/sw.js"]
+        raw=[vtask(8,3,four),vtask(9,2,source_pair),
+             issue(number=10,path="docs/worker-task-regression-audit.md"),
+             issue(number=11,path="test/today-logic.test.mjs")]
+        def fetch(url):
+            self.assertIn("issues?",url)
+            return raw
+        with tempfile.TemporaryDirectory() as folder:
+            ledger=Path(folder)/"ledger.json"
+            self.assertEqual(q.once(scan=True,fetch=fetch,ledger_path=ledger,
+                                    unattended=True),2)
+            self.assertEqual(q.once(scan=True,fetch=fetch,ledger_path=ledger,
+                                    unattended=False),4)
+            invoked=[]
+            def fake_perform(task,state,fetch,runner):
+                invoked.append(task["issue"])
+                return True
+            with patch.object(q,"perform",side_effect=fake_perform):
+                self.assertEqual(q.once(fetch=fetch,ledger_path=ledger,
+                                        unattended=True),1)
+                self.assertEqual(q.once(fetch=fetch,ledger_path=ledger,
+                                        unattended=False),1)
+            self.assertEqual(invoked,[10,8])
+
 if __name__=="__main__":unittest.main()
