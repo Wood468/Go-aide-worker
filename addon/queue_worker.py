@@ -693,8 +693,14 @@ def perform(task, state, fetch=github_read, runner=child_run):
         raise
 
 
-def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
+def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
+         unattended=False):
     tasks = candidates(fetch)
+    if unattended:
+        # Continuous background execution is limited to the previously proven
+        # legacy single-file docs / existing flat test contract. Version-two
+        # and version-three source+test jobs require an explicit manual pilot.
+        tasks = [task for task in tasks if "version" not in task]
     state = read_ledger(ledger_path)
     if scan:
         waiting = sum(approved_for_dispatch(t, state) for t in tasks)
@@ -720,10 +726,10 @@ def main():
         except BlockingIOError:
             raise QueueError("Another queue worker holds the lock") from None
         if mode == "loop":
-            print("Approved queue active, one draft PR at a time", flush=True)
+            print("Approved queue active: legacy single-file tasks only; one draft PR at a time", flush=True)
             while True:
                 try:
-                    once()
+                    once(unattended=True)
                 except (QueueError, OSError, ValueError):
                     print("Queue iteration failed; task held for review", flush=True)
                 time.sleep(600)
