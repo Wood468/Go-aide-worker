@@ -155,7 +155,7 @@ def main():
     os.setgroups([])
     os.setgid(UID)
     os.setuid(UID)
-    if action in {"queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot"}:
+    if action in {"queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task"}:
         # Read-only status or one tightly scoped ledger recovery. Neither
         # receives Gemini/GitHub secrets or any edit/publish permission.
         import preflight

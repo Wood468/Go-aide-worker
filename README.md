@@ -8,6 +8,12 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.5: route artwork recovery to the credential-free queue handler
+
+The v0.5.4 one-time action was accepted by the options schema but not included in the dispatch set, so Home Assistant handed it to the ordinary job runner and it **failed closed** before changing the ledger. v0.5.5 adds the missing handler membership, and a full launcher integration regression verifies the actual unprivileged `queue_worker.py recover_artwork_task` target, the absence of job staging, and that no Gemini/GitHub credentials are forwarded.
+
+Keep the live worker **Idle**, all flags OFF, until v0.5.5 is installed and these tests pass. Then explicitly run the one-time review action only if #472 still meets the existing safeguards and no worker PR has been published. A rejected recovery must not be automatically retried.
+
 ## v0.5.4: one reviewed recovery for artwork test #472
 
 This version introduces a **single explicitly approved recovery action** for a failed, owner-approved #472 test-only task targeting existing `test/variant-art.test.mjs`. It reuses the exhaustive bounded post-issue GitHub PR history audit, issue author/label/path checks, and strictly enforced one-retry ceiling from the original pilots. **No general ledger reset exists.** It cannot run if the prior entry is not exactly the first `needs-review` attempt, if any matching draft PR exists, or if approval changed.
