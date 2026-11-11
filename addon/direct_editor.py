@@ -11,12 +11,51 @@ import urllib.request
 import job_runner
 
 MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
-MAX_INPUT = 40_000
+MAX_INPUT = 40_000  # Small files retain the existing complete-replacement response.
+MAX_FILE_BYTES = 100_000  # Never exceed the independent publisher's per-file cap.
 MAX_OUTPUT = 100_000
+MAX_REPLACEMENTS = 3
+MAX_REPLACEMENT_CHARS = 12_000
+MAX_TOUCHED_CHARS = 24_000
 
 
 class DirectEditError(Exception):
     pass
+
+
+def apply_replacements(original, replacements):
+    """Replace only uniquely matched, nonoverlapping substrings of the original.
+
+    All offsets refer to the immutable original, so a replacement cannot
+    silently change the anchor used by another replacement.
+    """
+    if not isinstance(replacements, list) or not 1 <= len(replacements) <= MAX_REPLACEMENTS:
+        raise DirectEditError("Invalid large-file replacement count")
+    ranges = []
+    touched = 0
+    for item in replacements:
+        if (not isinstance(item, dict) or set(item) != {"old", "new"}
+                or not isinstance(item["old"], str) or not isinstance(item["new"], str)):
+            raise DirectEditError("Invalid large-file replacement")
+        old, new = item["old"], item["new"]
+        if (len(old) < 12 or not old.strip() or old == new
+                or len(old) > MAX_REPLACEMENT_CHARS
+                or len(new) > MAX_REPLACEMENT_CHARS):
+            raise DirectEditError("Large-file replacement exceeds scope")
+        if original.count(old) != 1:
+            raise DirectEditError("Large-file replacement anchor is not unique")
+        pos = original.index(old)
+        ranges.append((pos, pos + len(old), new))
+        touched += len(old) + len(new)
+    if touched > MAX_TOUCHED_CHARS:
+        raise DirectEditError("Large-file edits exceed bounded scope")
+    ordered = sorted(ranges)
+    if any(a[0] < b[1] for b, a in zip(ordered, ordered[1:])):
+        raise DirectEditError("Overlapping large-file replacements")
+    updated = original
+    for start, end, new in reversed(ordered):
+        updated = updated[:start] + new + updated[end:]
+    return updated
 
 
 def generate(key, prompt, path, original, opener=urllib.request.urlopen):
@@ -24,13 +63,26 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
         raise DirectEditError("Gemini key missing")
     if len(prompt) > 3000 or not prompt.strip():
         raise DirectEditError("Invalid editing instruction")
-    if len(original) > MAX_INPUT:
+    size = len(original.encode("utf-8"))
+    if size > MAX_FILE_BYTES:
         raise DirectEditError("Selected file is too large")
+    large = size > MAX_INPUT
+    instruction = (
+        'Return only a JSON object with keys "path" and "replacements". '
+        '"replacements" must be an array of 1 to 3 objects with exactly the '
+        'keys "old" and "new". Every "old" must copy an exact, unique, '
+        'contiguous substring of CURRENT FILE, including original whitespace. '
+        'Return ONLY the changed fragments, not the whole file. '
+        'Each old/new fragment must be at most 12000 characters and the sum '
+        'of old/new lengths at most 24000. Never edit unrelated sections. '
+        if large else
+        'Return only a valid JSON object with keys "path" and "content". '
+        '"content" must be the entire replacement file. '
+    )
     task = (
         "You are changing exactly one file in a temporary source checkout. "
-        "Return only a valid JSON object with keys path and content. "
-        "Path must exactly equal the provided path. Content must be the entire "
-        "replacement file contents. Do not include Markdown fences. "
+        + instruction +
+        "Path must exactly equal the provided path. Do not include Markdown fences. "
         "Do not write secrets, credentials, instructions to deploy, or unrelated changes.\n"
         "PATH: " + path + "\n"
         "CURRENT FILE:\n" + original + "\n"
@@ -48,7 +100,10 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
         with opener(req, timeout=45) as response:
             if response.status != 200:
                 raise DirectEditError("Gemini request failed")
-            result = json.loads(response.read(MAX_OUTPUT + 1))
+            raw_result = response.read(MAX_OUTPUT + 1)
+            if len(raw_result) > MAX_OUTPUT:
+                raise DirectEditError("Gemini response exceeds limit")
+            result = json.loads(raw_result)
     except urllib.error.HTTPError as e:
         category = ("auth" if e.code in (401, 403) else
                     "quota" if e.code == 429 else
@@ -61,8 +116,13 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
         updated = json.loads(candidate)
     except (KeyError, IndexError, TypeError, ValueError) as e:
         raise DirectEditError("Model returned invalid structured edit") from None
-    if (not isinstance(updated, dict) or set(updated) != {"path", "content"}
-            or updated["path"] != path or not isinstance(updated["content"], str)):
+    if not isinstance(updated, dict) or updated.get("path") != path:
+        raise DirectEditError("Model returned unapproved path or content")
+    if large:
+        if set(updated) != {"path", "replacements"}:
+            raise DirectEditError("Model returned invalid large-file response")
+        return apply_replacements(original, updated["replacements"])
+    if set(updated) != {"path", "content"} or not isinstance(updated["content"], str):
         raise DirectEditError("Model returned unapproved path or content")
     return updated["content"]
 
@@ -79,17 +139,20 @@ def edit(workspace, selected, prompt, key, generator=generate):
         raise DirectEditError("Unsafe edit destination")
     if not target.exists():
         target.touch(mode=0o600, exist_ok=False)
-    if not target.is_file() or target.stat().st_size > MAX_INPUT:
+    if not target.is_file() or target.stat().st_size > MAX_FILE_BYTES:
         raise DirectEditError("Selected file is invalid or oversized")
     try:
-        original = target.read_text(encoding="utf-8")
+        # Keep CRLF exactly as checked out. Path.read_text() normalises newlines
+        # and would otherwise rewrite unrelated bytes in a large-file patch.
+        with target.open("r", encoding="utf-8", newline="") as source:
+            original = source.read()
     except UnicodeError:
         raise DirectEditError("Only UTF-8 text files are supported") from None
     updated = generator(key, prompt, relative, original)
     if not isinstance(updated, str) or not updated or updated == original:
         raise DirectEditError("No content change produced")
     raw = updated.encode("utf-8")
-    if len(raw) > MAX_INPUT or b"\0" in raw or any(marker in raw for marker in
+    if len(raw) > MAX_FILE_BYTES or b"\0" in raw or any(marker in raw for marker in
                 (b"github_pat_", b"ghp_", b"-----BEGIN PRIVATE KEY-----")):
         raise DirectEditError("Edited file failed content safety checks")
     # Atomic replacement of a regular file; never run generated code.
