@@ -188,7 +188,15 @@ def ledger_summary(path=LEDGER):
         status = entry.get("state", "invalid") if isinstance(entry, dict) else "invalid"
         if status not in {"started", "needs-review", "submitted", "approved-pilot-retry", "retired"}:
             status = "invalid"
-        print("Worker queue #" + str(key) + ": " + status, flush=True)
+        stage = entry.get("failure_stage") if isinstance(entry, dict) else None
+        if stage not in {"refresh", "target-validation", "approval-precheck",
+                         "edit-source", "edit-test", "edit-single", "cache-sync",
+                         "syntax-check", "diff-validation", "approval-postcheck",
+                         "publish"}:
+            stage = None
+        print("Worker queue #" + str(key) + ": " + status +
+              (" (stage: " + stage + ")" if status == "needs-review" and stage else ""),
+              flush=True)
     if not state:
         print("Worker queue ledger empty; no tasks claimed", flush=True)
     return state
@@ -511,6 +519,69 @@ def retire_abandoned_venue_clock_task(path=LEDGER, fetch=github_read):
 
 
 
+def retire_failed_four_file_pilot(path=LEDGER, fetch=github_read):
+    """Close out exact failed synthetic issue #505; never retry or publish."""
+    state = read_ledger(path)
+    previous = state.get("505")
+    if (not isinstance(previous, dict) or previous.get("state") != "needs-review"
+            or previous.get("attempts") != 1 or "pr" in previous):
+        raise QueueError("Exact four-file pilot retirement not eligible")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/505")
+    if not isinstance(issue, dict):
+        raise QueueError("Four-file pilot issue unavailable")
+    body = issue.get("body")
+    parts = TASK_RE.findall(body) if isinstance(body, str) else []
+    try:
+        task = json.loads(parts[0]) if len(parts) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    labels = issue.get("labels")
+    expected = ["public/today.js", "test/today-logic.test.mjs", "public/index.html", "public/sw.js"]
+    if (issue.get("number") != 505 or issue.get("state") != "open"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or issue.get("title") != "[GO-WORKER] v0.5.11 disposable four-file asset-cache contract pilot"
+            or task.get("version") != 3 or task.get("paths") != expected
+            or not isinstance(task.get("instruction"), str)
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)):
+        raise QueueError("Exact four-file pilot identity or approval changed")
+    issued = issue.get("created_at")
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
+        raise QueueError("Pilot issue creation time unavailable")
+    verified_cutoff = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Invalid pilot PR history")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Malformed pilot PR history")
+            created = pr.get("created_at")
+            if not isinstance(created, str) or not re.fullmatch(iso_utc, created):
+                raise QueueError("Pilot PR creation time unavailable")
+            if created < issued:
+                verified_cutoff = True
+                break
+            if ("Worker: issue #505" in str(pr.get("title") or "")
+                    or "Source task: #505" in str(pr.get("body") or "")):
+                raise QueueError("Four-file pilot may already have a published PR")
+        if verified_cutoff or len(prs) < 5:
+            verified_cutoff = True
+            break
+    if not verified_cutoff:
+        raise QueueError("Cannot verify complete four-file pilot PR history")
+    state["505"] = {"state": "retired", "attempts": 1, "reason": "discarded-four-file-pilot"}
+    save_ledger(state, path)
+    print("Failed four-file pilot #505 retired without retry or PR", flush=True)
+    return True
+
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -523,8 +594,10 @@ def perform(task, state, fetch=github_read, runner=child_run):
     attempts = 2 if isinstance(prior, dict) and prior.get("state") == "approved-pilot-retry" else 1
     state[key] = {"state": "started", "attempts": attempts}
     save_ledger(state)
+    stage = "refresh"
     try:
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
+        stage = "target-validation"
         version = task.get("version")
         multi = version in (2, 3)
         paths = task["paths"] if multi else [task["path"]]
@@ -548,6 +621,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
                     raise QueueError("Test task must edit exactly one existing file")
             elif target.exists():
                 raise QueueError("Documentation task must create exactly one new file")
+        stage = "approval-precheck"
         if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
                                        "/issues/" + key)) != task:
             raise QueueError("Multi-file approval changed")
@@ -572,23 +646,28 @@ def perform(task, state, fetch=github_read, runner=child_run):
         finally:
             if temp.exists():
                 temp.unlink()
-        for relative in edit_paths:
+        for i, relative in enumerate(edit_paths):
+            stage = "edit-source" if multi and i == 0 else "edit-test" if multi else "edit-single"
             runner([sys.executable, "/opt/worker/direct_editor.py"],
                    child_env(GEMINI_API_KEY=gemini, EDIT_FILES=relative,
                              GO_WORKER_QUEUE_EDIT="1"))
         if version == 3:
+            stage = "cache-sync"
             # The model may never edit HTML/SW; apply exactly two deterministic
             # version-token substitutions against pristine tracked baselines.
             import cache_contract
             cache_contract.apply(CHECKOUT, paths[0], key)
+        stage = "syntax-check"
         # Parse edited JS only. Never execute model-produced tests in HA.
         for relative in edit_paths:
             if multi or relative.startswith("test/"):
                 runner(["node", "--check", str(CHECKOUT / relative)], child_env())
+        stage = "diff-validation"
         import publisher
         _head, changed = publisher.safe_files(CHECKOUT)
         if [name for name, _data in changed] != sorted(paths):
             raise QueueError("Missing or extra modified task paths")
+        stage = "approval-postcheck"
         if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
                                        "/issues/" + key)) != task:
             raise QueueError("Multi-file approval revoked before publication")
@@ -596,6 +675,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
                                     WORKER_ISSUE_NUMBER=key)
         if multi:
             publication_env["WORKER_APPROVED_PATHS"] = json.dumps(paths)
+        stage = "publish"
         out = runner([sys.executable, "/opt/worker/publisher.py"], publication_env)
         matched = re.search(rb"Created draft PR #(\d+)", out)
         if matched is None:
@@ -606,7 +686,9 @@ def perform(task, state, fetch=github_read, runner=child_run):
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
     except Exception:
-        state[key] = {"state": "needs-review", "attempts": attempts}
+        # Static stage only: never persist the exception, prompts, files or keys.
+        state[key] = {"state": "needs-review", "attempts": attempts,
+                      "failure_stage": stage}
         save_ledger(state)
         raise
 
@@ -630,7 +712,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -661,6 +743,8 @@ def main():
             retire_failed_two_file_pilot()
         elif mode == "retire_venue_clock_task":
             retire_abandoned_venue_clock_task()
+        elif mode == "retire_four_file_pilot":
+            retire_failed_four_file_pilot()
         else:
             once(scan=(mode == "scan"))
 
