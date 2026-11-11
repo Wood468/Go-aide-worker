@@ -8,6 +8,18 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.11: reviewed source/test plus deterministic browser-cache sync
+
+The version-three owner-approved queue task format adds **exactly two deterministic cache files** to the two existing tracked source/test paths. Only four fixed source/test pairs are eligible. Unlike unrestricted multi-file editing, **Gemini never sees or modifies `public/index.html` or `public/sw.js`**. The credential-free cache contract updates the exact versioned source URL in those files, and changes the isolated service-worker shell cache name, preserving every unrelated byte. Any missing/ambiguous reference, altered baseline, symlink, unexpected path, invalid token, missing approval or current-main drift fails closed. The publisher independently recomputes the complete expected cache changes from the tracked Git baseline and requires precisely four changed files, followed by a fresh check of the approved issue and base commit. The legacy v1 and v2 task formats remain unchanged.
+
+Example single-line task marker (following an approved owner-created issue):
+
+```text
+GO_WORKER_TASK_JSON:{"version":3,"paths":["public/today.js","test/today-logic.test.mjs","public/index.html","public/sw.js"],"instruction":"Make one small related change in the source and its regression test only; cache references are updated by a separate deterministic process."}
+```
+
+The four allowlisted tuples are `public/today.js` with `test/today-logic.test.mjs`, `public/event-components.js` with `test/event-components-crowned-alias.test.mjs`, `public/detail.js` with `test/event-detail-source-confidence.test.mjs`, and `public/app.js` with `test/universal-event.test.mjs`; each adds `public/index.html` and `public/sw.js` in that precise order. The worker checks JS syntax but does not execute model-produced code in Home Assistant. It publishes **draft PRs only** after complete per-file checks. GitHub Actions owns actual tests. Approval is task-specific; the queue loop must remain disabled until the exact 4-file acceptance pilot and full app CI are reviewed.
+
 ## v0.5.10: one-way retirement of failed two-file acceptance task #497
 
 The first reviewed v0.5.8 two-file acceptance task #497 failed with exit code 2 before any confirmed draft PR. Its approval label is removed. Following v0.5.9's independently successful *manual* edits of both 20 KB Today source and the related test, the durable ledger still correctly holds `#497: needs-review`. This release adds **exactly one** credential-free `queue_retire_two_file_pilot` action, which can transition **only** #497's first failed attempt to `retired`, never to a retryable state.

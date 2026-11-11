@@ -81,13 +81,18 @@ def parse_task(issue):
         if not isinstance(path, str) or not PATH_RE.fullmatch(path):
             return None
         return {"issue": issue["number"], "path": path, "instruction": instruction.strip()}
-    if set(obj) == {"version", "paths", "instruction"} and type(obj["version"]) is int and obj["version"] == 2:
-        paths = obj["paths"]
-        if (not isinstance(paths, list) or len(paths) != 2
-                or not all(isinstance(p, str) for p in paths)
-                or tuple(paths) not in SOURCE_TEST_PAIRS):
+    if set(obj) == {"version", "paths", "instruction"} and type(obj["version"]) is int:
+        version, paths = obj["version"], obj["paths"]
+        if (not isinstance(paths, list) or not all(isinstance(p, str) for p in paths)
+                or version not in (2, 3)):
             return None
-        return {"issue": issue["number"], "version": 2,
+        if version == 2 and (len(paths) != 2 or tuple(paths) not in SOURCE_TEST_PAIRS):
+            return None
+        if version == 3 and (len(paths) != 4
+                or tuple(paths[:2]) not in SOURCE_TEST_PAIRS
+                or paths[2:] != ["public/index.html", "public/sw.js"]):
+            return None
+        return {"issue": issue["number"], "version": version,
                 "paths": list(paths), "instruction": instruction.strip()}
     return None
 
@@ -457,10 +462,14 @@ def perform(task, state, fetch=github_read, runner=child_run):
     save_ledger(state)
     try:
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
-        multi = task.get("version") == 2
+        version = task.get("version")
+        multi = version in (2, 3)
         paths = task["paths"] if multi else [task["path"]]
-        if multi and tuple(paths) not in SOURCE_TEST_PAIRS:
+        edit_paths = paths[:2] if version == 3 else paths
+        if multi and tuple(edit_paths) not in SOURCE_TEST_PAIRS:
             raise QueueError("Disallowed source/test contract")
+        if version == 3 and paths[2:] != ["public/index.html", "public/sw.js"]:
+            raise QueueError("Disallowed cache update paths")
         for relative in paths:
             target = CHECKOUT / relative
             if (not target.parent.is_dir() or target.parent.is_symlink()
@@ -500,12 +509,17 @@ def perform(task, state, fetch=github_read, runner=child_run):
         finally:
             if temp.exists():
                 temp.unlink()
-        for relative in paths:
+        for relative in edit_paths:
             runner([sys.executable, "/opt/worker/direct_editor.py"],
                    child_env(GEMINI_API_KEY=gemini, EDIT_FILES=relative,
                              GO_WORKER_QUEUE_EDIT="1"))
+        if version == 3:
+            # The model may never edit HTML/SW; apply exactly two deterministic
+            # version-token substitutions against pristine tracked baselines.
+            import cache_contract
+            cache_contract.apply(CHECKOUT, paths[0], key)
         # Parse edited JS only. Never execute model-produced tests in HA.
-        for relative in paths:
+        for relative in edit_paths:
             if multi or relative.startswith("test/"):
                 runner(["node", "--check", str(CHECKOUT / relative)], child_env())
         import publisher

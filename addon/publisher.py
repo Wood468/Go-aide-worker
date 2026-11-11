@@ -138,16 +138,25 @@ def publish(workspace, token, request=api, branch_id=None):
             approved = json.loads(approved_raw)
         except (ValueError, TypeError):
             raise PublishError("Malformed approved paths") from None
-        if (not isinstance(approved, list) or len(approved) != 2
-                or not all(isinstance(p, str) for p in approved)
-                or tuple(approved) not in queue_worker.SOURCE_TEST_PAIRS
-                or [path for path, _ in files] != sorted(approved)):
-            raise PublishError("Edited files differ from approved source/test pair")
+        if not isinstance(approved, list) or not all(isinstance(p, str) for p in approved):
+            raise PublishError("Invalid approved paths")
+        is_pair = len(approved) == 2 and tuple(approved) in queue_worker.SOURCE_TEST_PAIRS
+        is_cache = (len(approved) == 4
+                    and tuple(approved[:2]) in queue_worker.SOURCE_TEST_PAIRS
+                    and approved[2:] == ["public/index.html", "public/sw.js"])
+        if not (is_pair or is_cache) or [path for path, _ in files] != sorted(approved):
+            raise PublishError("Edited files differ from approved task scope")
+        if is_cache:
+            import cache_contract
+            try:
+                cache_contract.verify(workspace, approved[0], issue_number)
+            except cache_contract.CacheContractError:
+                raise PublishError("Cache versions differ from exact expected changes") from None
         for relative in approved:
             local_git(workspace, "ls-files", "--error-unmatch", "--", relative)
         source = request(token, "GET", "/issues/" + issue_number)
         task = queue_worker.parse_task(source)
-        if (not task or task.get("version") != 2
+        if (not task or task.get("version") != (3 if is_cache else 2)
                 or task["issue"] != int(issue_number)
                 or task["paths"] != approved):
             raise PublishError("Approved GitHub task was revoked or changed")
