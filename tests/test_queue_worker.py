@@ -481,4 +481,84 @@ class WorkerQueueTests(unittest.TestCase):
                     self.assertEqual(q.read_ledger(ledger)["465"]["state"], "needs-review")
 
 
+    def test_retire_exhausted_artwork_task_requires_fallback_review_and_no_worker_pr(self):
+        def record():
+            x = issue(number=472, labels=["p1"], path="test/variant-art.test.mjs")
+            x["state"] = "open"
+            return x
+
+        def fallback():
+            return {"number": 488, "state": "closed", "merged": True,
+                    "merged_at": "2026-11-11T03:50:51Z",
+                    "merged_by": {"login": "Wood468"},
+                    "title": "test: preserve Crowned and Roaming Pokemon artwork request identities",
+                    "body": "Fallback for exhausted worker task #472.",
+                    "base": {"ref": "main"}, "merge_commit_sha": "a" * 40}
+
+        def simulate(changes=None, old_state=None):
+            calls = []
+            changes = changes or {}
+            def fetch(url):
+                calls.append(url)
+                if url.endswith("/issues/472"):
+                    return {**record(), **changes.get("issue", {})}
+                if url.endswith("/pulls/488"):
+                    return {**fallback(), **changes.get("pr", {})}
+                if url.endswith("/pulls/488/files?per_page=100"):
+                    return changes.get("files", [{"filename": "test/variant-art.test.mjs",
+                                                  "status": "modified"}])
+                if "/pulls?" in url:
+                    return changes.get("history", [])
+                self.fail("Unexpected API request")
+            with tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                q.save_ledger({"472": old_state or {"state": "needs-review", "attempts": 2},
+                               "470": {"state": "submitted", "pr": 473}}, ledger)
+                before = q.read_ledger(ledger)
+                if changes or old_state:
+                    with self.assertRaises(q.QueueError):
+                        q.retire_exhausted_artwork_task(ledger, fetch)
+                    self.assertEqual(q.read_ledger(ledger), before)
+                else:
+                    self.assertTrue(q.retire_exhausted_artwork_task(ledger, fetch))
+                    after = q.read_ledger(ledger)
+                    self.assertEqual(after["472"], {"state": "retired", "attempts": 2,
+                                                    "resolution_pr": 488})
+                    self.assertEqual(after["470"], before["470"])
+                    self.assertFalse(q.approved_for_dispatch(
+                        q.parse_task(issue(number=472, path="test/variant-art.test.mjs")),
+                        after))
+                    with self.assertRaises(q.QueueError):
+                        q.retire_exhausted_artwork_task(ledger, fetch)
+            return calls
+
+        self.assertEqual(len(simulate()), 4)
+        for changes in (
+            {"issue": {"labels": [{"name": "go-worker-approved"}]}},
+            {"issue": {"user": {"login": "other"}}},
+            {"issue": {"body": "No machine task"}},
+            {"pr": {"merged": False}},
+            {"pr": {"base": {"ref": "untrusted"}}},
+            {"pr": {"body": "Not task 472"}},
+            {"files": [{"filename": "src/other.js", "status": "modified"}]},
+            {"files": [{"filename": "test/variant-art.test.mjs", "status": "modified"},
+                       {"filename": "src/other.js", "status": "modified"}]},
+            {"history": [{"title": "Worker: issue #472 draft changes",
+                          "body": "Source task: #472",
+                          "created_at": "2026-11-11T03:00:00Z"}]},
+            {"history": [{"title": "Unrelated", "body": "",
+                          "created_at": "bad-date"}]},
+        ):
+            with self.subTest(change=changes):
+                simulate(changes=changes)
+        for old_state in (
+            {"state": "needs-review", "attempts": 1},
+            {"state": "approved-pilot-retry", "attempts": 1},
+            {"state": "needs-review", "attempts": 2, "pr": 500},
+            {"state": "retired", "attempts": 2, "resolution_pr": 488},
+        ):
+            with self.subTest(old_state=old_state):
+                simulate(old_state=old_state)
+
+
 if __name__=="__main__":unittest.main()
