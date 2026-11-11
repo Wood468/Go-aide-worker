@@ -274,4 +274,63 @@ class SingleFileEditorTests(unittest.TestCase):
             with self.assertRaises(editor.DirectEditError):
                 editor.selected_job_file()
 
+
+    def test_transient_503_has_one_retry_before_validating_structured_reply(self):
+        from urllib.error import HTTPError
+        calls=[]
+        def opener(req,timeout):
+            calls.append((req.full_url,timeout))
+            if len(calls)==1:
+                raise HTTPError(req.full_url,503,"private model details",{},None)
+            return FakeResponse({"path":"WORKER_SMOKE_TEST.txt",
+                                 "content":"accepted\n"})
+        with patch.object(editor.time,"sleep",return_value=None) as pause:
+            result=editor.generate("dummy","change test only","WORKER_SMOKE_TEST.txt",
+                                   "before\n",opener)
+        self.assertEqual(result,"accepted\n")
+        self.assertEqual(len(calls),2)
+        self.assertTrue(all(seconds==45 for _url,seconds in calls))
+        pause.assert_called_once_with(1)
+
+    def test_repeated_transient_failure_stops_after_one_retry(self):
+        from urllib.error import HTTPError
+        for code in (500,502,503,504):
+            with self.subTest(code=code):
+                calls=[]
+                def opener(req,timeout):
+                    calls.append(1)
+                    raise HTTPError(req.full_url,code,"not logged",{},None)
+                with patch.object(editor.time,"sleep",return_value=None) as pause:
+                    with self.assertRaisesRegex(editor.DirectEditError,
+                                                "Gemini request rejected: service"):
+                        editor.generate("dummy","change test","WORKER_SMOKE_TEST.txt",
+                                        "before\n",opener)
+                self.assertEqual(len(calls),2)
+                pause.assert_called_once_with(1)
+
+    def test_no_retries_on_quota_auth_model_or_invalid_structured_reply(self):
+        from urllib.error import HTTPError
+        for code in (400,401,403,404,429):
+            with self.subTest(code=code):
+                calls=[]
+                def opener(req,timeout):
+                    calls.append(1)
+                    raise HTTPError(req.full_url,code,"secret provider body",{},None)
+                with patch.object(editor.time,"sleep") as pause:
+                    with self.assertRaises(editor.DirectEditError):
+                        editor.generate("dummy","edit test","WORKER_SMOKE_TEST.txt",
+                                        "before\n",opener)
+                    pause.assert_not_called()
+                self.assertEqual(len(calls),1)
+        calls=[]
+        def invalid(req,timeout):
+            calls.append(1)
+            return FakeResponse({"path":"WRONG.js","content":"x"})
+        with patch.object(editor.time,"sleep") as pause:
+            with self.assertRaises(editor.DirectEditError):
+                editor.generate("dummy","edit test","WORKER_SMOKE_TEST.txt",
+                                "before\n",invalid)
+            pause.assert_not_called()
+        self.assertEqual(len(calls),1)
+
 if __name__=="__main__":unittest.main()
