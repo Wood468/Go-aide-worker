@@ -728,4 +728,67 @@ class WorkerQueueTests(unittest.TestCase):
             with self.subTest(record=before):
                 scenario(ledger_override=before)
 
+
+    def test_version_three_queue_edits_only_source_and_test_then_syncs_cache(self):
+        paths=["public/today.js","test/today-logic.test.mjs",
+               "public/index.html","public/sw.js"]
+        item=issue(number=601)
+        item["body"]="GO_WORKER_TASK_JSON:"+json.dumps({
+            "version":3,"paths":paths,
+            "instruction":"Apply one minimal edit only to approved source and test."})
+        parsed=q.parse_task(item)
+        self.assertEqual(parsed["version"],3)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); checkout=root/"source"
+            (checkout/"public").mkdir(parents=True)
+            (checkout/"test").mkdir()
+            for relative in paths:
+                (checkout/relative).write_text("const original = true;\n")
+            ledger=root/"ledger.json"
+            calls=[]; edits=[]; cache_calls=[]; published=[]
+            def runner(command,env):
+                calls.append((command,env))
+                if command[-1].endswith("refresh_repo.py"):
+                    return b""
+                if command[-1].endswith("direct_editor.py"):
+                    relative=env["EDIT_FILES"]
+                    edits.append(relative)
+                    self.assertIn(relative,paths[:2])
+                    self.assertNotIn("GITHUB_TOKEN",env)
+                    (checkout/relative).write_text("const updated = true;\n")
+                    return b""
+                if command[:2]==["node","--check"]:
+                    self.assertNotIn("GEMINI_API_KEY",env)
+                    self.assertNotIn("GITHUB_TOKEN",env)
+                    self.assertIn(str(checkout/paths[0]),[str(checkout/p) for p in paths[:2]])
+                    return b""
+                if command[-1].endswith("publisher.py"):
+                    published.append(env)
+                    return b"Created draft PR #602"
+                self.fail("Unexpected subprocess")
+            def sync(root_path,source,issue_number):
+                cache_calls.append((root_path,source,issue_number))
+                for relative in paths[2:]:
+                    (checkout/relative).write_text("const cache = true;\n")
+            def safe_files(_):
+                return "head",sorted((p,(checkout/p).read_bytes()) for p in paths)
+            original_save=q.save_ledger
+            with (patch.object(q,"ROOT",root),patch.object(q,"CHECKOUT",checkout),
+                  patch.object(q,"save_ledger",
+                               side_effect=lambda state:original_save(state,ledger)),
+                  patch.dict(os.environ,{"GITHUB_TOKEN":"dummy-gh",
+                                        "GEMINI_API_KEY":"dummy-gemini"}),
+                  patch.dict(sys.modules,{"publisher":type("Stub",(),{
+                      "local_git":staticmethod(lambda *args:b"tracked"),
+                      "safe_files":staticmethod(safe_files)})()}),
+                  patch("cache_contract.apply",side_effect=sync)):
+                self.assertTrue(q.perform(parsed,{},lambda url:item,runner))
+            self.assertEqual(edits,paths[:2])
+            self.assertEqual(cache_calls,[(checkout,paths[0],"601")])
+            self.assertEqual(len(published),1)
+            self.assertEqual(json.loads(published[0]["WORKER_APPROVED_PATHS"]),paths)
+            self.assertEqual(q.read_ledger(ledger)["601"]["state"],"submitted")
+            self.assertEqual([c[0][0] for c in calls if c[0][0]=="node"],["node","node"])
+
+
 if __name__=="__main__":unittest.main()
