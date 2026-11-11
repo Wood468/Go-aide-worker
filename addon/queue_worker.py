@@ -448,6 +448,69 @@ def retire_failed_two_file_pilot(path=LEDGER, fetch=github_read):
 
 
 
+def retire_abandoned_venue_clock_task(path=LEDGER, fetch=github_read):
+    """Close out exact failed synthetic issue #475; never retry or publish."""
+    state = read_ledger(path)
+    previous = state.get("475")
+    if (not isinstance(previous, dict) or previous.get("state") != "needs-review"
+            or previous.get("attempts") not in (1, 2) or "pr" in previous):
+        raise QueueError("Exact venue-clock task retirement not eligible")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/475")
+    if not isinstance(issue, dict):
+        raise QueueError("Venue-clock task issue unavailable")
+    body = issue.get("body")
+    parts = TASK_RE.findall(body) if isinstance(body, str) else []
+    try:
+        task = json.loads(parts[0]) if len(parts) == 1 else {}
+    except (TypeError, ValueError):
+        task = {}
+    labels = issue.get("labels")
+    expected = "test/event-encounter-rotations.test.mjs"
+    if (issue.get("number") != 475 or issue.get("state") != "open"
+            or (issue.get("user") or {}).get("login", "").lower() != "wood468"
+            or issue.get("title") != "[GO-WORKER] Future event venue-local habitat clock regression"
+            or task.get("path") != expected or set(task) != {"path", "instruction"}
+            or not isinstance(task.get("instruction"), str)
+            or not isinstance(labels, list)
+            or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
+                   for label in labels)
+            or any(label["name"] == "go-worker-approved" for label in labels)):
+        raise QueueError("Exact venue-clock task identity or approval changed")
+    issued = issue.get("created_at")
+    iso_utc = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
+    if not isinstance(issued, str) or not re.fullmatch(iso_utc, issued):
+        raise QueueError("Pilot issue creation time unavailable")
+    verified_cutoff = False
+    for page in range(1, 26):
+        prs = fetch("https://api.github.com/repos/" + REPO +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    str(page))
+        if not isinstance(prs, list) or len(prs) > 5:
+            raise QueueError("Invalid pilot PR history")
+        for pr in prs:
+            if not isinstance(pr, dict):
+                raise QueueError("Malformed pilot PR history")
+            created = pr.get("created_at")
+            if not isinstance(created, str) or not re.fullmatch(iso_utc, created):
+                raise QueueError("Pilot PR creation time unavailable")
+            if created < issued:
+                verified_cutoff = True
+                break
+            if ("Worker: issue #475" in str(pr.get("title") or "")
+                    or "Source task: #475" in str(pr.get("body") or "")):
+                raise QueueError("Venue-clock task may already have a published PR")
+        if verified_cutoff or len(prs) < 5:
+            verified_cutoff = True
+            break
+    if not verified_cutoff:
+        raise QueueError("Cannot verify complete venue-clock task PR history")
+    state["475"] = {"state": "retired", "attempts": previous["attempts"], "reason": "abandoned-venue-clock"}
+    save_ledger(state, path)
+    print("Abandoned venue-clock task #475 retired without retry or PR", flush=True)
+    return True
+
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
@@ -567,7 +630,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER):
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -596,6 +659,8 @@ def main():
             retire_exhausted_artwork_task()
         elif mode == "retire_two_file_pilot":
             retire_failed_two_file_pilot()
+        elif mode == "retire_venue_clock_task":
+            retire_abandoned_venue_clock_task()
         else:
             once(scan=(mode == "scan"))
 

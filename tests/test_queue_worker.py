@@ -792,4 +792,56 @@ class WorkerQueueTests(unittest.TestCase):
             self.assertEqual([c[0][0] for c in calls if c[0][0]=="node"],["node","node"])
 
 
+
+    def test_deapproved_venue_clock_retirement_is_one_way_and_exact(self):
+        item=issue(number=475,path="test/event-encounter-rotations.test.mjs")
+        item["title"]="[GO-WORKER] Future event venue-local habitat clock regression"
+        item["labels"]=[]
+        def scenario(change=None, record=None):
+            with tempfile.TemporaryDirectory() as folder:
+                ledger=Path(folder)/"ledger.json"
+                entry=record or {"state":"needs-review","attempts":1}
+                state={"475":entry,"499":{"state":"submitted","pr":500}}
+                q.save_ledger(state,ledger)
+                remote={**item,**(change or {}).get("issue",{})}
+                def fetch(url):
+                    if url.endswith("/issues/475"):
+                        return remote
+                    if "/pulls?" in url:
+                        return (change or {}).get("history",[])
+                    self.fail("Unapproved API read")
+                if change or record:
+                    with self.assertRaises(q.QueueError):
+                        q.retire_abandoned_venue_clock_task(ledger,fetch)
+                    self.assertEqual(q.read_ledger(ledger),state)
+                else:
+                    self.assertTrue(q.retire_abandoned_venue_clock_task(ledger,fetch))
+                    actual=q.read_ledger(ledger)
+                    self.assertEqual(actual["475"],{"state":"retired","attempts":1,
+                                                     "reason":"abandoned-venue-clock"})
+                    self.assertEqual(actual["499"],state["499"])
+                    with self.assertRaises(q.QueueError):
+                        q.retire_abandoned_venue_clock_task(ledger,fetch)
+        scenario()
+        for change in (
+            {"issue":{"labels":[{"name":"go-worker-approved"}]}},
+            {"issue":{"user":{"login":"other"}}},
+            {"issue":{"title":"[GO-WORKER] different"}},
+            {"issue":{"state":"closed"}},
+            {"issue":{"body":"GO_WORKER_TASK_JSON:{}"}},
+            {"history":[{"title":"Worker: issue #475 draft changes",
+                         "body":"Source task: #475",
+                         "created_at":"2026-11-11T03:00:00Z"}]},
+            {"history":[{"title":"Unrelated","body":"",
+                         "created_at":"not-iso"}]},
+        ):
+            with self.subTest(change=change):
+                scenario(change=change)
+        for record in ({"state":"started","attempts":1},
+                       {"state":"needs-review","attempts":3},
+                       {"state":"retired","attempts":1},
+                       {"state":"needs-review","attempts":1,"pr":999}):
+            with self.subTest(record=record):
+                scenario(record=record)
+
 if __name__=="__main__":unittest.main()
