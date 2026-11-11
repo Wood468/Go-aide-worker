@@ -323,5 +323,42 @@ class RestrictedJobs(unittest.TestCase):
         self.assertNotIn("sh", runner.command_for("edit", "hello")[0])
 
 
+
+    def test_queue_once_error_output_is_redacted_to_fixed_category(self):
+        import json
+        from io import StringIO
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as folder:
+            job=Path(folder)/"job.json"
+            job.write_text(json.dumps(self.job("queue_once")))
+            def fake_popen(_command,**kwargs):
+                kwargs["stdout"].write(
+                    b"UNTRUSTED secret-github-token\n"
+                    b"WORKER_QUEUE_DIAGNOSTIC:github-rate-limit\n"
+                    b"model response must not be exposed\n")
+                process=MagicMock()
+                process.wait.return_value=2
+                return process
+            with (patch.dict(os.environ,{"ENABLE_QUEUE":"true",
+                                        "GEMINI_API_KEY":"fake-gemini",
+                                        "GITHUB_TOKEN":"fake-github"}),
+                  patch.object(runner.subprocess,"Popen",side_effect=fake_popen),
+                  redirect_stdout(StringIO()) as output):
+                self.assertEqual(runner.run(job,self.workspace),2)
+            visible=output.getvalue()
+            self.assertIn("GO Aider queue diagnostic: github-rate-limit",visible)
+            self.assertNotIn("secret-github-token",visible)
+            self.assertNotIn("model response",visible)
+
+    def test_unsafe_queue_diagnostic_output_remains_private(self):
+        self.assertIsNone(runner.safe_queue_diagnostic(
+            b"WORKER_QUEUE_DIAGNOSTIC:secret-github-token\n"))
+        self.assertIsNone(runner.safe_queue_diagnostic(
+            b"WORKER_QUEUE_DIAGNOSTIC:github-rate-limit\n"
+            b"WORKER_QUEUE_DIAGNOSTIC:other\n"))
+        self.assertIsNone(runner.safe_queue_diagnostic(b"x"*4097))
+        self.assertEqual(runner.safe_queue_diagnostic(
+            b"WORKER_QUEUE_DIAGNOSTIC:ledger-invalid\n"),"ledger-invalid")
+
 if __name__ == "__main__":
     unittest.main()
