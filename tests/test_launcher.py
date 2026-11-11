@@ -475,6 +475,40 @@ class OptionsBridge(unittest.TestCase):
         self.assertNotIn("GITHUB_TOKEN",args[2])
         staged.assert_not_called()
 
+    def test_two_file_service_retirement_is_credential_free(self):
+        action="queue_retire_two_file_service_task"
+        for flags in (
+            {"enable_queue":False,"enable_edits":False,"enable_publishing":False},
+            {"enable_queue":True,"enable_edits":True,"enable_publishing":False},
+            {"enable_queue":True,"enable_edits":False,"enable_publishing":True},
+        ):
+            self.write(job_action=action,job_prompt="",edit_files="",
+                       gemini_api_key="",github_token="",**flags)
+            with self.assertRaises(launcher.ConfigurationError):
+                launcher.read_options(self.path)
+        self.write(job_action=action,job_prompt="",edit_files="",
+                   enable_queue=True,enable_edits=False,enable_publishing=False,
+                   gemini_api_key="",github_token="")
+        options=launcher.read_options(self.path)
+        with (patch.object(launcher,"read_options",return_value=options),
+              patch.object(launcher,"prepare_directory"),
+              patch.object(launcher,"protect_options"),
+              patch.object(launcher.os,"geteuid",return_value=0),
+              patch.object(launcher.os,"setgroups"),
+              patch.object(launcher.os,"setgid"),
+              patch.object(launcher.os,"setuid"),
+              patch.object(launcher.os,"execve",side_effect=SystemExit) as execution,
+              patch.object(launcher,"stage_job") as staged,
+              patch.dict("sys.modules",{"preflight":__import__("types").SimpleNamespace(check=lambda:0)})):
+            with self.assertRaises(SystemExit):
+                launcher.main()
+        args=execution.call_args.args
+        self.assertEqual(args[1][-2:],["/opt/worker/queue_worker.py",
+                                      "retire_two_file_service_task"])
+        self.assertNotIn("GEMINI_API_KEY",args[2])
+        self.assertNotIn("GITHUB_TOKEN",args[2])
+        staged.assert_not_called()
+
     def test_abandoned_venue_clock_retirement_is_credential_free(self):
         action="queue_retire_venue_clock_task"
         for flags in (
