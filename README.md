@@ -8,6 +8,25 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.8: guarded version-two source + regression test (experimental)
+
+Owner-approved `[GO-WORKER]` issues can now specify **exactly two existing tracked files**, in a versioned `GO_WORKER_TASK_JSON:` object. The source must be one of four fixed, reviewed source-to-test pairs; no arbitrary source paths or new files are permitted:
+
+- `public/event-components.js` + `test/event-components-crowned-alias.test.mjs`
+- `public/today.js` + `test/today-logic.test.mjs`
+- `public/detail.js` + `test/event-detail-source-confidence.test.mjs`
+- `public/app.js` + `test/universal-event.test.mjs`
+
+Example issue machine line (one line only):
+
+```text
+GO_WORKER_TASK_JSON:{"version":2,"paths":["public/event-components.js","test/event-components-crowned-alias.test.mjs"],"instruction":"Make one small documented source change and add a closely related regression assertion without altering unrelated behaviour."}
+```
+
+Source and test are edited sequentially using the pre-existing **one-file Gemini editor**. The worker checks exact file scope, verified tracked paths, UTF-8 limits (100 KB per file), and credential-free `node --check` on both files; it never executes generated tests. Before editing and before publishing, the queue re-reads the exact owner-approved issue and refuses changed/revoked contracts. The independent GitHub-token-only publisher repeats approval checks and requires **both files, no extras**, a current base SHA, and draft-only publication. A failed second edit or changed approval becomes `needs-review`; no partial PR is published and the next checkout refresh is clean. Existing legacy single-file tasks are unchanged.
+
+**Rollout:** do not enable unattended `queue_loop` just because the code is installed. Review worker CI and complete diff first, install v0.5.8, verify idle/off, and use a single harmless approved two-file pilot (`queue_once`) only after checking unrelated PRs, already-submitted worker PRs and ledger. Inspect draft scope and app CI before considering more tasks. Emergency stop: set `job_action: idle`, `enable_queue:false`, `enable_edits:false`, `enable_publishing:false`, and restart the add-on. Do not merge or deploy from the worker.
+
 ## v0.5.7: one-way exhausted artwork task retirement (review first)
 
 After two failed attempts of app task #472, the equivalent test-only coverage was separately delivered by merged app PR #488. A new **explicit** `queue_retire_artwork_task` action permits retiring only ledger entry #472 without another Gemini call, test execution, queue retry, PR publication, or GitHub mutation. It requires `enable_queue:true`, editing and publishing **both disabled**, and no job prompt. The credential-free handler must verify the recorded second failure, owner-authored issue and its withdrawn approval, exact task path, merged fallback PR #488 with one changed test file, and exhaustive bounded GitHub PR history showing no previous worker PR for #472. Any uncertainty fails closed and leaves the ledger unchanged. A retired entry cannot be dispatched/recovered.
