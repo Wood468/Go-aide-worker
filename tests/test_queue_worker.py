@@ -1195,4 +1195,138 @@ class WorkerQueueTests(unittest.TestCase):
             with self.subTest(invalid=invalid):
                 scenario(record=invalid)
 
+
+    def test_publisher_child_error_is_static_and_unknown_output_is_never_logged(self):
+        command = [sys.executable, "/opt/worker/publisher.py"]
+        cases = {
+            b"WORKER_PUBLISH_DIAGNOSTIC:stale-main\n": "stale-main",
+            b"WORKER_PUBLISH_DIAGNOSTIC:github-unavailable\n": "github-unavailable",
+            b"WORKER_PUBLISH_DIAGNOSTIC:github-conflict\n": "github-conflict",
+            b"WORKER_PUBLISH_DIAGNOSTIC:ghp_LEAK_ME\n": "unknown",
+            b"ghp_LEAK_ME": "unknown",
+        }
+        for output, expected in cases.items():
+            with self.subTest(expected=expected):
+                response = type("Result", (), {"returncode": 2, "stdout": output})()
+                with patch.object(q.subprocess, "run", return_value=response):
+                    with self.assertRaises(q.PublisherChildError) as caught:
+                        q.child_run(command, q.child_env())
+                self.assertEqual(caught.exception.category, expected)
+                self.assertNotIn("LEAK_ME", str(caught.exception))
+
+    def test_publish_failure_category_persists_without_untrusted_child_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            target = root / "source/test/places.test.mjs"
+            target.parent.mkdir(parents=True)
+            target.write_text("import test from 'node:test';\n")
+            def runner(command, env):
+                cmd = command[1] if len(command) > 1 else ""
+                if cmd.endswith("refresh_repo.py"):
+                    return b""
+                if cmd.endswith("direct_editor.py"):
+                    target.write_text("import test from 'node:test';\ntest('ok',()=>{});\n")
+                    return b""
+                if command[0] == "node":
+                    return b""
+                if cmd.endswith("publisher.py"):
+                    raise q.PublisherChildError("github-conflict")
+                self.fail("Unexpected executable")
+            original = q.save_ledger
+            state = {}
+            with (patch.object(q, "ROOT", root),
+                  patch.object(q, "CHECKOUT", root / "source"),
+                  patch.object(q, "save_ledger",
+                               side_effect=lambda value: original(value, root / "ledger.json")),
+                  patch.dict(os.environ, {"GEMINI_API_KEY": "dummy", "GITHUB_TOKEN": "dummy"}),
+                  patch.dict(sys.modules, {"publisher": type("Stub", (), {
+                      "safe_files": staticmethod(lambda checkout:
+                          ("a"*40, [("test/places.test.mjs", target.read_bytes())]))
+                  })()})):
+                task = q.parse_task(issue(number=550, path="test/places.test.mjs"))
+                with self.assertRaises(q.PublisherChildError):
+                    q.perform(task, state, runner=runner)
+            self.assertEqual(state["550"], {
+                "state": "needs-review", "attempts": 1,
+                "failure_stage": "publish", "failure_category": "github-conflict"
+            })
+            from io import StringIO
+            with patch("sys.stdout", new_callable=StringIO) as output:
+                q.ledger_summary(root / "ledger.json")
+            self.assertIn("stage: publish; category: github-conflict", output.getvalue())
+
+    def test_places_publish_retirement_is_exact_credential_free_and_one_way(self):
+        item = issue(number=550, labels=[], path="test/places.test.mjs")
+        item["title"] = "[GO-WORKER] Reject impossible Places event and provenance calendar dates"
+        task_json = {"path": "test/places.test.mjs",
+                     "instruction": "Validate real Gregorian dates in existing test only."}
+        item["body"] = "GO_WORKER_TASK_JSON:" + json.dumps(task_json)
+        original = {"state": "needs-review", "attempts": 1,
+                    "failure_stage": "publish"}
+        sha = "a" * 40
+        branch = {"name": "worker/review-abcdef123456", "commit": {"sha": sha}}
+
+        def attempt(issue_changes=None, ledger_change=None, history=None,
+                    branches=None, commit_files=None, should_fail=False):
+            with tempfile.TemporaryDirectory() as folder:
+                ledger = Path(folder) / "ledger.json"
+                before = {"550": ledger_change if ledger_change is not None else original,
+                          "539": {"state": "submitted", "pr": 541, "attempts": 1}}
+                q.save_ledger(before, ledger)
+                def fetch(url):
+                    if url.endswith("/issues/550"):
+                        return {**item, **(issue_changes or {})}
+                    if "/pulls?" in url:
+                        return history if history is not None else []
+                    if "/branches?" in url:
+                        return branches if branches is not None else [branch]
+                    if url.endswith("/commits/" + sha):
+                        return {"files": commit_files if commit_files is not None
+                                else [{"filename": "test/attendance-classification.test.mjs"}]}
+                    self.fail("Unexpected credential-free endpoint")
+                if should_fail:
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_places_publish_task(ledger, fetch)
+                    self.assertEqual(q.read_ledger(ledger), before)
+                else:
+                    self.assertTrue(q.retire_failed_places_publish_task(ledger, fetch))
+                    after = q.read_ledger(ledger)
+                    self.assertEqual(after["539"], before["539"])
+                    self.assertEqual(after["550"], {
+                        "state": "retired", "attempts": 1,
+                        "reason": "reconciled-failed-places-publish"
+                    })
+                    with self.assertRaises(q.QueueError):
+                        q.retire_failed_places_publish_task(ledger, fetch)
+                    self.assertFalse(q.approved_for_dispatch({
+                        "issue": 550, "path": "test/places.test.mjs",
+                        "instruction": task_json["instruction"]}, after))
+
+        attempt()
+        for change in (
+            {"labels": [{"name": "go-worker-approved"}]},
+            {"user": {"login": "unknown"}},
+            {"state": "closed"},
+            {"title": "Different task"},
+            {"body": "GO_WORKER_TASK_JSON:{}"},
+            {"created_at": "untrusted"},
+        ):
+            with self.subTest(change=change):
+                attempt(issue_changes=change, should_fail=True)
+        attempt(history=[{"created_at": "2026-11-11T09:00:00Z",
+                          "title": "Worker: issue #550 draft changes",
+                          "body": "Source task: #550"}], should_fail=True)
+        attempt(branches=[branch], commit_files=[{"filename": "test/places.test.mjs"}],
+                should_fail=True)
+        attempt(branches=[{"name": "worker/review-wrong", "commit": {"sha": sha}}],
+                should_fail=True)
+        attempt(branches=[branch] * 100, should_fail=True)
+        attempt(ledger_change={"state": "needs-review", "attempts": 2,
+                               "failure_stage": "publish"}, should_fail=True)
+        attempt(ledger_change={"state": "needs-review", "attempts": 1,
+                               "failure_stage": "edit-single"}, should_fail=True)
+        attempt(ledger_change={"state": "retired", "attempts": 1}, should_fail=True)
+        attempt(ledger_change={"state": "needs-review", "attempts": 1,
+                               "failure_stage": "publish", "pr": 800}, should_fail=True)
+
 if __name__=="__main__":unittest.main()
