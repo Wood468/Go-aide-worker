@@ -344,6 +344,17 @@ class SingleFileEditorTests(unittest.TestCase):
         self.assertEqual(len(calls),1)
 
 
+    def test_service_errors_keep_only_allowlisted_http_status(self):
+        import urllib.error
+        for status in (500, 502, 503, 504):
+            error = urllib.error.HTTPError(editor.MODEL_URL, status, "SECRET_PROVIDER_BODY", {}, None)
+            with self.subTest(status=status), patch.object(editor.time, "sleep", return_value=None):
+                with self.assertRaises(editor.DirectEditError) as raised:
+                    editor.generate("SECRET_KEY", "bounded instruction", "WORKER_SMOKE_TEST.txt", "old",
+                                    opener=lambda *args, **kwargs: (_ for _ in ()).throw(error))
+                self.assertEqual(str(raised.exception), "Gemini request rejected: service-" + str(status))
+                self.assertNotIn("SECRET", str(raised.exception))
+
     def test_service_failure_keeps_original_bytes_and_hides_provider_details(self):
         from urllib.error import HTTPError
         original = "original regression assertions\\n"

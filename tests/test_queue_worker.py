@@ -160,7 +160,7 @@ class WorkerQueueTests(unittest.TestCase):
                 state={}
                 self.assertTrue(q.perform(q.parse_task(issue()),state,
                                           fetch=lambda url:{"state":"closed"},runner=runner))
-                self.assertEqual(state["10"],{"state":"submitted","pr":999,"attempts":1})
+                self.assertEqual(state["10"],{"state":"submitted","pr":999,"attempts":1,"task_sha256":q.task_fingerprint(q.parse_task(issue()))})
             self.assertEqual(json.loads(job.read_text()), {
                 "action": "direct_edit", "prompt": q.parse_task(issue())["instruction"]
             })
@@ -270,7 +270,8 @@ class WorkerQueueTests(unittest.TestCase):
                                   q.QueueError("controlled failure")))
             self.assertEqual(state["462"],
                              {"state": "needs-review", "attempts": 2,
-                              "failure_stage": "refresh"})
+                              "failure_stage": "refresh",
+                              "task_sha256": q.task_fingerprint(q.parse_task(issue(number=462, path="docs/worker-task-queue-pilot.md")))})
             self.assertFalse(q.approved_for_dispatch(
                 q.parse_task(issue(number=462,
                                    path="docs/worker-task-queue-pilot.md")),
@@ -1009,7 +1010,8 @@ class WorkerQueueTests(unittest.TestCase):
                 with self.assertRaises(q.EditorChildError):
                     q.perform(task,state,runner=runner)
             self.assertEqual(state["516"],{"state":"needs-review","attempts":1,
-                       "failure_stage":"edit-single","failure_category":"quota"})
+                       "failure_stage":"edit-single","failure_category":"quota",
+                "task_sha256":q.task_fingerprint(task)})
             self.assertFalse(q.approved_for_dispatch(task,state))
 
     def test_banner_cache_retirement_is_exact_and_nonretryable(self):
@@ -1250,7 +1252,7 @@ class WorkerQueueTests(unittest.TestCase):
                     q.perform(task, state, runner=runner)
             self.assertEqual(state["550"], {
                 "state": "needs-review", "attempts": 1,
-                "failure_stage": "publish", "failure_category": "github-conflict"
+                "failure_stage": "publish", "failure_category": "github-conflict", "task_sha256":q.task_fingerprint(task)
             })
             from io import StringIO
             with patch("sys.stdout", new_callable=StringIO) as output:

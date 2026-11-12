@@ -48,3 +48,20 @@ def paths_of(task):
 
 def permits(task, paths, unattended=False):
     return (not unattended or 'version' not in task) and set(paths_of(task)).issubset(paths)
+
+
+def review_request(raw):
+    """A credential-free operator receipt, never a coding prompt or command."""
+    if not isinstance(raw, str) or len(raw) > 1000:
+        raise ScopeError('Invalid failure review request')
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        raise ScopeError('Invalid failure review request') from None
+    if (not isinstance(obj, dict) or set(obj) != {'issue', 'path', 'task_sha256'}
+            or type(obj['issue']) is not int or not 1 <= obj['issue'] <= 9_999_999_999
+            or not isinstance(obj['task_sha256'], str)
+            or not re.fullmatch('[a-f0-9]{64}', obj['task_sha256'])):
+        raise ScopeError('Invalid failure review request')
+    validate([obj['path']], unattended=True)
+    return obj

@@ -7,7 +7,7 @@ configuration:
     description: "Required allowlist for queue jobs: up to five safe paths. Queue Loop accepts existing flat test/*.test.mjs files only. Queue Once can also use reviewed source/test/cache paths. Manual edits use these paths as model context."
   job_prompt:
     name: Coding task prompt
-    description: "Required only for Edit. Do not paste keys, tokens or other secrets."
+    description: "For Edit, enter the bounded task instruction. For reviewed failure isolation, enter only the documented issue/path/task_sha256 JSON receipt. Never paste keys, tokens or other secrets."
   enable_queue:
     name: Enable approved task queue
     description: "Off by default. With Queue Loop, edits one approved documentation task at a time and submits a draft PR. Requires both editing and publishing explicitly enabled."
