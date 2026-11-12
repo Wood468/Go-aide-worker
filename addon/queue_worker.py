@@ -1241,6 +1241,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
             raise QueueError("No verified PR number; inspect GitHub before retry")
         number = int(matched.group(1))
         state[key] = {"state": "submitted", "pr": number, "attempts": attempts}
+        if multi:
+            state[key]["task_sha256"] = contract_sha
         save_ledger(state)
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
@@ -1252,6 +1254,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if ((isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"})
                 or (isinstance(exc, PublisherChildError) and stage == "publish")):
             failure["failure_category"] = exc.category
+        if task.get("version") in (2, 3):
+            failure["task_sha256"] = contract_sha
         state[key] = failure
         save_ledger(state)
         raise
