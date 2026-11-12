@@ -8,6 +8,10 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.25: reject hidden control bytes before writing or publishing
+
+Independent review of source/test/cache pilot #595 / app draft #596 found literal backspace bytes in a model-generated JavaScript regex (JSON `\\b` escaping was wrong), plus a test using the wrong API. The shared UTF-8 text guard now rejects C0 controls other than tab/newline/carriage return, and DEL, in both the editor before atomic replacement and the independent publisher. Correct escaped regex bytes, Unicode and ordinary whitespace remain unchanged. This guard prevents hidden byte corruption; semantic correctness still requires independent review and full CI. No automatic repair, task retry, scope expansion or source merge permission is added.
+
 ## v0.5.24: reconcile the failed source-anchor pilot without retry
 
 Controlled source/test task #594 failed at edit-source/anchor on installed v0.5.23: Gemini returned an old fragment that did not match uniquely. The exact-patch safety check refused it; no PR was created. The raw provider response remains private, so missing versus duplicated text is unconfirmed. Approval was removed.

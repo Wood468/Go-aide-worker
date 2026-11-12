@@ -96,6 +96,18 @@ class DraftPublisher(unittest.TestCase):
         with self.assertRaises(publisher.PublishError):
             publisher.safe_files(self.root)
 
+    def test_publisher_independently_rejects_hidden_controls(self):
+        for value in [*range(0, 9), 11, 12, *range(14, 32), 127]:
+            with self.subTest(control=value):
+                (self.root / "README.md").write_bytes(b"changed " + bytes([value]) + b" text\n")
+                with self.assertRaises(publisher.PublishError):
+                    publisher.safe_files(self.root)
+
+    def test_text_whitespace_unicode_and_escaped_regex_are_preserved(self):
+        raw = 'const re = /\\bmax\\b/i;\r\n\t// café 雪\n'.encode('utf-8')
+        (self.root / "README.md").write_bytes(raw)
+        self.assertEqual(publisher.safe_files(self.root)[1], [("README.md", raw)])
+
     def test_rejects_smoke_test_file(self):
         (self.root / "WORKER_SMOKE_TEST.txt").write_text("temporary")
         with self.assertRaises(publisher.PublishError):
