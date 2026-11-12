@@ -148,12 +148,11 @@ class SectionPipeline(unittest.TestCase):
         simulate()
         for checkpoint in (1, 2, 3): simulate(checkpoint)
 
-    def test_single_run_dispatch_separates_credentials_and_preserves_contract(self):
+    def test_background_dispatch_separates_credentials_and_preserves_contract(self):
         with tempfile.TemporaryDirectory() as folder:
             runtime = Path(folder)
             ledger = runtime / 'ledger.json'
             task = q.parse_task(self.issue)
-            state = {}
             edits, publications = [], []
             def runner(command, env):
                 if command[-1].endswith('refresh_repo.py'):
@@ -187,13 +186,25 @@ class SectionPipeline(unittest.TestCase):
                 for path in self.paths[2:]:
                     (self.root / path).write_bytes(b'// deterministic cache\n')
             save = q.save_ledger
+            def fetch(url):
+                if url == q.ISSUES_URL:
+                    return [self.issue]
+                if url.endswith('/issues/701'):
+                    return self.issue
+                if url.endswith('/pulls/702'):
+                    return {'state': 'open'}
+                self.fail('Unexpected queue read')
             with patch.object(q, 'ROOT', runtime), patch.object(q, 'CHECKOUT', self.root), \
                  patch.object(q, 'save_ledger', lambda state: save(state, ledger)), \
-                 patch.object(q, 'has_pending_review', return_value=False), \
                  patch('cache_contract.apply', side_effect=cache_apply), \
                  patch.dict(os.environ, {'GEMINI_API_KEY': 'fixture', 'GITHUB_TOKEN': 'fixture',
                                          'WORKER_FILE_ALLOWLIST': json.dumps(self.paths)}, clear=True):
-                self.assertTrue(q.perform(task, state, fetch=lambda url: self.issue, runner=runner))
+                self.assertEqual(q.once(fetch=fetch, runner=runner, ledger_path=ledger,
+                                        unattended=True, allowlist=self.paths, section_only=True), 1)
+                # A later poll cannot edit or republish while the draft is open.
+                self.assertEqual(q.once(fetch=fetch, runner=lambda *_: self.fail('Replayed task'),
+                                        ledger_path=ledger, unattended=True,
+                                        allowlist=self.paths, section_only=True), 0)
             self.assertEqual(edits, self.paths[:2])
             self.assertEqual(len(publications), 1)
             self.assertEqual(q.read_ledger(ledger)['701']['state'], 'submitted')

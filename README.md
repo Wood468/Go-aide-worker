@@ -4,6 +4,22 @@
 
 This add-on can run an **opt-in GitHub-approved task queue** without exposing an inbound network service or unconstrained shell agent.
 
+## v0.5.33: autonomous bounded large-file queue
+
+The new `queue_large_file_loop` action polls approved version-4 section tasks every ten minutes. It runs the existing large-file editor, related regression edit, credential-free syntax checks, deterministic cache synchronization and independent draft publisher without a separate Queue Once invocation for each task. The existing `queue_loop` remains test-only.
+
+Files to edit must contain **one complete ordered bundle**, for example:
+
+```text
+public/dash.js,test/event-detail-source-confidence.test.mjs,public/app.js,public/index.html,public/sw.js
+```
+
+Other supported bundles are the existing reviewed source/test pairs followed by `public/index.html,public/sw.js`. Partial bundles, mixed pairs, extra files, legacy tasks and version-2/3 source tasks cannot dispatch in this mode. Each issue still requires owner authorship, `go-worker-approved`, and an immutable version-4 contract with the current source SHA-256 and unique bounded section anchors. The worker does not invent task approvals or refresh stale hashes automatically.
+
+The named source may be up to 250,000 bytes; the model receives at most 40,000 bytes of selected context. The publisher proves all bytes outside that section unchanged and rechecks the complete task, file scope, current main and approval. Generated data, arbitrary repository files and whole-file rewrites remain outside this queue's scope. An open draft, interrupted job or needs-review record pauses later dispatch. Failures retain their one-attempt ledger and are never automatically retried or skipped. The worker does not merge or deploy source changes.
+
+To enable after release validation: install with Job `idle` and queue/edit/publish OFF, verify the installed version and read-only `queue_status`, then select `queue_large_file_loop`, the complete file bundle, empty Job prompt, all three opt-ins and the existing configured credentials. Start the add-on and independently verify the fixed large-file queue startup message, durable ledger, exact draft diff and full app CI. An existing open worker draft must be reviewed before another task can run; changing modes does not clear history. To stop, stop the add-on, set Job `idle` and all three opt-ins OFF, then restart. Preserve the ledger and credential values during upgrades and rollback. Offline tests establish software behavior; actual installation and live execution must be verified separately.
+
 ## GitHub token field (v0.2.1)
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
@@ -62,7 +78,7 @@ Queue Once accepts an owner-approved version-4 contract with exactly `version`, 
 
 Only the named source may exceed 100 KB, up to 250 KB. Gemini receives at most 40 KB of selected context. The independent publisher reads the original tracked HEAD bytes, verifies the approved hash, and proves every byte outside the section unchanged. Other files keep the 100 KB cap; section-task aggregate content is capped at 400 KB. Test edits and deterministic cache updates are required. Node parses source/test syntax without executing generated code in Home Assistant.
 
-Queue Loop rejects all versioned source tasks. Section editing cannot be requested by manual Direct Edit options. Editing and publishing require the existing explicit opt-ins and file allowlist. The coding worker creates a draft PR only; production-source auto-merge remains disabled. Failed or ambiguous publication requires review, never automatic replay.
+The legacy Queue Loop rejects all versioned source tasks; v0.5.33 adds a separate explicitly scoped `queue_large_file_loop` for version-4 tasks. Section editing cannot be requested by manual Direct Edit options. Editing and publishing require the existing explicit opt-ins and file allowlist. The coding worker creates a draft PR only; production-source auto-merge remains disabled. Failed or ambiguous publication requires review, never automatic replay.
 
 Activation evidence and the controlled live acceptance result are tracked in PR #51 and issue #30. A repository merge alone is not an installed or accepted release.
 
