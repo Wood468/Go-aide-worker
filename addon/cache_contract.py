@@ -12,7 +12,8 @@ import subprocess
 INDEX = "public/index.html"
 SW = "public/sw.js"
 MAX_CACHE_BYTES = 100_000
-REF_VERSION = re.compile(rb"[0-9]{8}[a-z](?:-[A-Za-z0-9]+)?")
+VERSION_PATTERN = rb"[0-9]{8}[a-z](?:-[A-Za-z0-9]+){0,2}"
+REF_VERSION = re.compile(rb"([0-9]{8}[a-z](?:-(?!w[0-9]+(?:-|$))[A-Za-z0-9]+)?)(?:-w[1-9][0-9]{0,9})?")
 SHELL_NAME = re.compile(rb"gofn-shell-v[0-9]+(?:-[A-Za-z0-9]+)?")
 
 class CacheContractError(Exception):
@@ -44,30 +45,37 @@ def safe_target(root, relative):
 
 def expected(root, source, issue):
     if (not isinstance(source, str) or not re.fullmatch(r"public/[A-Za-z0-9-]+\.js", source)
-            or not isinstance(issue, str) or not issue.isdecimal()
-            or not 1 <= len(issue) <= 10):
+            or not isinstance(issue, str) or not re.fullmatch(r"[1-9][0-9]{0,9}", issue)):
         raise CacheContractError("Invalid cache task identity")
     name = source.removeprefix("public/").encode("ascii")
     original_index, original_sw = git_base(root, INDEX), git_base(root, SW)
     # Strictly one versioned script tag (not an arbitrary match elsewhere).
-    pattern = re.compile(rb'(<script src="/' + re.escape(name) + rb'\?v=)([0-9]{8}[a-z](?:-[A-Za-z0-9]+)?)("></script>)')
+    pattern = re.compile(rb'(<script src="/' + re.escape(name) + rb'\?v=)(' + VERSION_PATTERN + rb')("></script>)')
     refs = list(pattern.finditer(original_index))
     if len(refs) != 1:
         raise CacheContractError("Expected one exact index script reference")
     old_version = refs[0].group(2)
-    if not REF_VERSION.fullmatch(old_version) or b"-w" in old_version:
+    version = REF_VERSION.fullmatch(old_version)
+    if not version:
         raise CacheContractError("Unrecognised source cache version")
-    next_version = old_version + b"-w" + issue.encode("ascii")
+    # Replace a prior worker identity rather than accumulating suffixes.
+    next_version = version.group(1) + b"-w" + issue.encode("ascii")
+    if next_version == old_version:
+        raise CacheContractError("Cache task already applied")
     old_ref = b"/" + name + b"?v=" + old_version
     new_ref = b"/" + name + b"?v=" + next_version
     # Require a single exact old reference in SW; never alter other cached assets.
     if original_sw.count(b"'" + old_ref + b"'") != 1:
         raise CacheContractError("SW cache asset reference missing or ambiguous")
     shells = SHELL_NAME.findall(original_sw)
-    if len(shells) != 1 or b"-w" in shells[0]:
+    if len(shells) != 1 or not re.fullmatch(rb"gofn-shell-v[0-9]{1,9}", shells[0]):
         raise CacheContractError("Unexpected SW shell cache name")
+    revision = int(shells[0].removeprefix(b"gofn-shell-v"))
+    if revision >= 999_999_999:
+        raise CacheContractError("SW shell revision exceeds limit")
+    next_shell = b"gofn-shell-v" + str(revision + 1).encode("ascii")
     sw_updated = original_sw.replace(b"'" + old_ref + b"'", b"'" + new_ref + b"'", 1)
-    sw_updated = sw_updated.replace(b"'" + shells[0] + b"'", b"'" + shells[0] + b"-w" + issue.encode() + b"'", 1)
+    sw_updated = sw_updated.replace(b"'" + shells[0] + b"'", b"'" + next_shell + b"'", 1)
     if sw_updated == original_sw or sw_updated.count(new_ref) != 1:
         raise CacheContractError("SW replacement did not match")
     index_updated = pattern.sub(lambda m: m.group(1) + next_version + m.group(3),
