@@ -1012,12 +1012,14 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
     if not isinstance(issue, dict):
         raise QueueError("Rotation task issue unavailable")
     raw = issue.get("body")
-    matches = TASK_RE.findall(raw) if isinstance(raw, str) and len(raw) <= 5000 else []
+    matches = re.findall(r'^GO_WORKER_TASK_JSON:(\{[^\n]{1,4500}\})$', raw, re.MULTILINE) if isinstance(raw, str) and len(raw) <= 5000 else []
     try:
         contract = json.loads(matches[0]) if len(matches) == 1 else None
     except (ValueError, TypeError):
         contract = None
     labels = issue.get("labels")
+    if isinstance(raw, str) and sum(line.startswith("GO_WORKER_TASK_JSON:") for line in raw.splitlines()) != 1:
+        raise QueueError("Failure contract markers changed")
     if (type(issue.get("number")) is not int or issue["number"] != number
             or issue.get("state") != "open"
             or not isinstance(issue.get("user"), dict)
@@ -1189,35 +1191,44 @@ LEGACY_SERVICE_REVIEW = {599: '7fd9519525679cbeb75a381ecdb7cdec737607c247411bda9
 
 
 def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
-    """One reviewed legacy-test HTTP service failure; never retry or publish."""
-    receipt = queue_scope.review_request(os.environ.get("WORKER_FAILURE_REVIEW"))
-    allowed = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=True)
-    if allowed != [receipt["path"]]:
-        raise QueueError("Failure review scope mismatch")
+    """Reviewed prewrite failure isolation; never retry, edit or publish."""
+    receipt = queue_scope.review_request(os.environ.get('WORKER_FAILURE_REVIEW'))
+    allowed = queue_scope.parse(os.environ.get('WORKER_FILE_ALLOWLIST'))
     state = read_ledger(path)
-    record = state.get(str(receipt["issue"]))
-    required = {"state", "attempts", "failure_stage", "failure_category"}
-    if (not isinstance(record, dict) or set(record) not in (required, required | {"task_sha256"})
-            or record.get("state") != "needs-review" or type(record.get("attempts")) is not int
-            or record["attempts"] != 1 or record.get("failure_stage") != "edit-single"
-            or record.get("failure_category") not in {"service", "service-500", "service-502", "service-503", "service-504"}
-            or ("task_sha256" not in record and LEGACY_SERVICE_REVIEW.get(receipt["issue"]) != receipt["task_sha256"])
-            or ("task_sha256" in record and record["task_sha256"] != receipt["task_sha256"])):
-        raise QueueError("Failure not eligible for reviewed isolation")
-    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/" + str(receipt["issue"]))
-    # Parse the original owner contract after approval has been withdrawn.
-    # Default dispatch/publication parsing still requires live approval.
+    record = state.get(str(receipt['issue']))
+    required = {'state', 'attempts', 'failure_stage', 'failure_category'}
+    source_format = (isinstance(record, dict) and record.get('failure_stage') == 'edit-source'
+                     and record.get('failure_category') == 'format')
+    service = (isinstance(record, dict) and record.get('failure_stage') == 'edit-single'
+               and record.get('failure_category') in {'service', 'service-500', 'service-502', 'service-503', 'service-504'})
+    if (not isinstance(record, dict) or set(record) not in (required, required | {'task_sha256'})
+            or record.get('state') != 'needs-review' or type(record.get('attempts')) is not int
+            or record['attempts'] != 1 or not (source_format or service)
+            or ('task_sha256' not in record and (source_format or LEGACY_SERVICE_REVIEW.get(receipt['issue']) != receipt['task_sha256']))
+            or ('task_sha256' in record and record['task_sha256'] != receipt['task_sha256'])):
+        raise QueueError('Failure not eligible for reviewed isolation')
+    issue = fetch('https://api.github.com/repos/' + REPO + '/issues/' + str(receipt['issue']))
     task = parse_task(issue, require_approval=False)
-    if (not task or "version" in task or task.get("path") != receipt["path"]
-            or task_fingerprint(task) != receipt["task_sha256"]):
-        raise QueueError("Reviewed failure contract changed")
-    return _retire_reviewed_edit_failure(path, fetch, receipt["issue"], issue["title"],
-        {"path": task["path"], "instruction": task["instruction"]}, record, {task["path"]},
-        "operator-reviewed-edit-service-no-retry",
-        "Reviewed edit-service task #" + str(receipt["issue"]) + " isolated without retry or PR",
+    if not task or task_fingerprint(task) != receipt['task_sha256']:
+        raise QueueError('Reviewed failure contract changed')
+    if source_format:
+        if task.get('version') != 4 or task['paths'][0] != receipt['path'] or allowed != task['paths']:
+            raise QueueError('Failure review scope mismatch')
+        owned = set(task['paths'])
+        contract = {k: v for k, v in task.items() if k != 'issue'}
+        reason = 'operator-reviewed-source-format-no-retry'
+    else:
+        if 'version' in task or task.get('path') != receipt['path'] or allowed != [task['path']]:
+            raise QueueError('Failure review scope mismatch')
+        owned = {task['path']}
+        contract = {'path': task['path'], 'instruction': task['instruction']}
+        reason = 'operator-reviewed-edit-service-no-retry'
+    return _retire_reviewed_edit_failure(path, fetch, receipt['issue'], issue['title'],
+        contract, record, owned, reason,
+        'Reviewed prewrite task #' + str(receipt['issue']) + ' isolated without retry or PR',
         required_review_label=REVIEW_LABEL,
-        retired_details={"task_sha256": receipt["task_sha256"], "failure_stage": "edit-single",
-                         "failure_category": record["failure_category"]})
+        retired_details={'task_sha256': receipt['task_sha256'], 'failure_stage': record['failure_stage'],
+                         'failure_category': record['failure_category']})
 
 
 def perform(task, state, fetch=github_read, runner=child_run):

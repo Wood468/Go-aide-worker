@@ -64,5 +64,8 @@ def review_request(raw):
             or not isinstance(obj['task_sha256'], str)
             or not re.fullmatch('[a-f0-9]{64}', obj['task_sha256'])):
         raise ScopeError('Invalid failure review request')
-    validate([obj['path']], unattended=True)
+    validate([obj['path']])
+    if not TEST_PATH.fullmatch(obj['path']) and obj['path'] not in {
+            pair[0] for pair in SOURCE_TEST_PAIRS | SECTION_SOURCE_TEST_PAIRS}:
+        raise ScopeError('Invalid review source path')
     return obj

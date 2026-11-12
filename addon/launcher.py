@@ -61,7 +61,9 @@ def read_options(path=OPTIONS):
     if action == "queue_isolate_reviewed_failure":
         try:
             review = queue_scope.review_request(prompt)
-            if selected != [review["path"]]:
+            queue_scope.validate(selected)
+            if ((queue_scope.TEST_PATH.fullmatch(review['path']) and selected != [review['path']])
+                    or selected[0] != review['path']):
                 raise queue_scope.ScopeError("Failure review scope mismatch")
         except queue_scope.ScopeError:
             raise ConfigurationError("Recovery requires an exact safe review receipt and file") from None

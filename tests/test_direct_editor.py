@@ -43,6 +43,29 @@ class SingleFileEditorTests(unittest.TestCase):
         out=editor.generate("dummy","Write the smoke-test line","WORKER_SMOKE_TEST.txt","",open_request)
         self.assertEqual(out,"GO Aider Gemini smoke test succeeded\n")
 
+    def test_schema_binds_path_and_response_shape_for_small_and_patch_edits(self):
+        for original in ('old', 'x' * 13000 + '\nconst anchorValue = 1;\n'):
+            def opener(req, timeout):
+                schema = json.loads(req.data)['generationConfig']['responseSchema']
+                self.assertEqual(schema['properties']['path']['enum'], ['WORKER_SMOKE_TEST.txt'])
+                if len(original) > editor.MAX_INPUT:
+                    self.assertEqual(schema['properties']['replacements']['maxItems'], editor.MAX_REPLACEMENTS)
+                    return FakeResponse({'path': 'WORKER_SMOKE_TEST.txt', 'replacements': [
+                        {'old': 'const anchorValue = 1;', 'new': 'const anchorValue = 2;'}]})
+                self.assertEqual(schema['required'], ['path', 'content'])
+                return FakeResponse({'path': 'WORKER_SMOKE_TEST.txt', 'content': 'updated'})
+            self.assertNotEqual(editor.generate('fixture', 'bounded task',
+                'WORKER_SMOKE_TEST.txt', original, opener), original)
+
+    def test_thought_parts_are_never_parsed_as_the_structured_edit(self):
+        response = FakeResponse({})
+        response.data = BytesIO(json.dumps({'candidates': [{'content': {'parts': [
+            {'thought': True, 'text': 'private reasoning, never an edit'},
+            {'text': json.dumps({'path': 'WORKER_SMOKE_TEST.txt', 'content': 'updated'})}
+        ]}}]}).encode())
+        self.assertEqual(editor.generate('fixture', 'bounded task', 'WORKER_SMOKE_TEST.txt',
+                                         'old', lambda *args, **kwargs: response), 'updated')
+
     def test_creates_only_selected_file(self):
         with patch.dict(os.environ,{"EDIT_FILES":"WORKER_SMOKE_TEST.txt"}):
             self.assertTrue(editor.edit(self.folder,["WORKER_SMOKE_TEST.txt"],"test","dummy",

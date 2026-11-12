@@ -90,10 +90,19 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
         "CURRENT FILE:\n" + original + "\n"
         "REQUEST:\n" + prompt
     )
+    properties = {'path': {'type': 'STRING', 'enum': [path]}}
+    if large:
+        properties['replacements'] = {'type': 'ARRAY', 'minItems': 1, 'maxItems': MAX_REPLACEMENTS,
+            'items': {'type': 'OBJECT', 'properties': {'old': {'type': 'STRING'}, 'new': {'type': 'STRING'}},
+                      'required': ['old', 'new']}}
+    else:
+        properties['content'] = {'type': 'STRING'}
+    schema = {'type': 'OBJECT', 'properties': properties, 'required': list(properties),
+              'propertyOrdering': list(properties)}
     body = json.dumps({
         "contents": [{"role": "user", "parts": [{"text": task}]}],
         "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
-                             "maxOutputTokens": 8192}
+                             "maxOutputTokens": 8192, "responseSchema": schema}
     }).encode()
     req = urllib.request.Request(MODEL_URL, data=body, method="POST", headers={
         "x-goog-api-key": key, "Content-Type": "application/json",
@@ -123,7 +132,12 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             raise DirectEditError("Gemini connection or response error") from None
     try:
-        candidate = result["candidates"][0]["content"]["parts"][0]["text"]
+        parts = result['candidates'][0]['content']['parts']
+        if not isinstance(parts, list):
+            raise ValueError('Invalid parts')
+        texts = [part['text'] for part in parts if isinstance(part, dict)
+                 and part.get('thought') is not True and isinstance(part.get('text'), str)]
+        candidate = ''.join(texts)
         updated = json.loads(candidate)
     except (KeyError, IndexError, TypeError, ValueError) as e:
         raise DirectEditError("Model returned invalid structured edit") from None

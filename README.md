@@ -8,6 +8,14 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.30: typed provider responses and reviewed section-format failures
+
+Gemini requests now include a response schema fixing the exact selected path and either full content or bounded replacements. Client validation remains mandatory; thought parts are excluded from structured output parsing. No malformed-response retry was added.
+
+The credential-free review action additionally accepts a one-attempt version-4 source task failed at `edit-source/format`, which occurs before the editor's atomic write. It requires the retained full task hash, withdrawn edit/merge approvals, separate operator review label, and the complete ordered source/test/cache allowlist. The existing complete PR/branch audit checks every owned path before a one-way retirement retaining the failure details. Test-stage, publish-stage, unknown, quota, repeated-attempt and possibly-published source failures remain blocked. The action cannot retry or call Gemini/GitHub writes. This is independent review, never automatic failure skipping.
+
+Controlled #615 exposed the format failure in v0.5.29 and remains preserved pending that audit. Its replacement must be a separately reviewed attempt after the provider contract fix is installed and checked.
+
 ## v0.5.28: reviewed pre-publication service failure isolation
 
 A new credential-free `queue_isolate_reviewed_failure` action replaces per-issue recovery releases for a narrow failure class. It can retire only a one-attempt, existing flat-test task held at `edit-single/service`, before publication. It cannot retry, edit, publish, clear other records or isolate quota/auth/model/source/publish/unknown failures. New task outcomes always retain their immutable task SHA-256; the single historical #599 row has an explicitly pinned compatibility hash.
