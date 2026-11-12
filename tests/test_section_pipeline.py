@@ -73,7 +73,7 @@ class SectionPipeline(unittest.TestCase):
 
     def test_realistic_section_envelope_and_duplicate_marker_rejected(self):
         payload = copy.deepcopy(self.payload)
-        payload['instruction'] = payload['section']['instruction'] = 'Scoped instruction. ' * 60
+        payload['instruction'] = payload['section']['instruction'] = ('Scoped instruction. ' * 60).strip()
         issue = {**self.issue, 'body': 'GO_WORKER_TASK_JSON:' + json.dumps(payload)}
         self.assertIsNotNone(q.parse_task(issue))
         issue['body'] += '\nGO_WORKER_TASK_JSON:' + 'x' * 4501
