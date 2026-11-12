@@ -8,6 +8,10 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.22: ship the deterministic cache contract
+
+The image now includes `cache_contract.py`, which was present in host tests but missing from the container. Version-three source/test tasks previously failed at cache-sync before publication. A manifest regression checks every runtime Python module is shipped, and the credential-free Docker smoke test imports the cache module. No task scope, credentials, merge policy or unattended source permissions change. Install idle with all opt-ins off; a new controlled source/test/cache pilot is still required.
+
 ## v0.5.21: reliable, secret-safe one-shot results
 
 The restricted `queue_once` action previously returned exit code zero for both a successful draft submission and an ordinary no-op. Its child stdout was private, leaving Home Assistant unable to distinguish outcomes without a separate ledger query. This caused ambiguous run reports during the verified issue #574 → draft PR #578 pilot.

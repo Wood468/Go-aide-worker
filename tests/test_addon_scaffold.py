@@ -34,6 +34,16 @@ class ScaffoldSafety(unittest.TestCase):
         self.assertNotIn("aider ", STARTUP)
         self.assertIn("os.execve(\"/usr/bin/sleep\"", (ROOT / "addon/launcher.py").read_text())
 
+    def test_all_runtime_python_modules_are_shipped(self):
+        # Host tests cannot detect missing container-only lazy imports.
+        shipped = set()
+        for line in DOCKERFILE.splitlines():
+            parts = line.split()
+            if parts and parts[0] == "COPY" and parts[-1] == "/opt/worker/":
+                shipped.update(parts[1:-1])
+        required = {p.name for p in (ROOT / "addon").glob("*.py")}
+        self.assertEqual(required - shipped, set(), "Runtime modules missing from image")
+
     def test_expected_files_exist(self):
         for name in ("addon/config.yaml", "addon/Dockerfile", "addon/run.sh", ".gitignore"):
             self.assertTrue((ROOT / name).is_file())
