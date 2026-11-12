@@ -160,7 +160,11 @@ def parse_task(issue, require_approval=True):
     body = issue.get("body")
     if not isinstance(body, str) or len(body) > 5000:
         return None
-    parts = TASK_RE.findall(body)
+    # Section requests repeat the immutable instruction inside the envelope.
+    # Retain the 5 KB issue cap, and require exactly one marker of any size.
+    if sum(line.startswith('GO_WORKER_TASK_JSON:') for line in body.splitlines()) != 1:
+        return None
+    parts = re.findall(r'^GO_WORKER_TASK_JSON:(\{[^\n]{1,4500}\})$', body, re.MULTILINE)
     if len(parts) != 1:
         return None
     try:

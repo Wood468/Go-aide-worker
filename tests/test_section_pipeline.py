@@ -71,6 +71,14 @@ class SectionPipeline(unittest.TestCase):
             {**self.payload, 'section': {**self.contract, 'end': 'other end anchor'}})})
         self.assertNotEqual(q.task_fingerprint(task), q.task_fingerprint(altered))
 
+    def test_realistic_section_envelope_and_duplicate_marker_rejected(self):
+        payload = copy.deepcopy(self.payload)
+        payload['instruction'] = payload['section']['instruction'] = 'Scoped instruction. ' * 60
+        issue = {**self.issue, 'body': 'GO_WORKER_TASK_JSON:' + json.dumps(payload)}
+        self.assertIsNotNone(q.parse_task(issue))
+        issue['body'] += '\nGO_WORKER_TASK_JSON:' + 'x' * 4501
+        self.assertIsNone(q.parse_task(issue))
+
     def test_actual_editor_preserves_200kb_outside_bytes_and_default_cap(self):
         calls = []
         def generator(key, prompt, path, text):
