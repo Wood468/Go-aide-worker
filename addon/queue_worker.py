@@ -1407,7 +1407,7 @@ def main():
         raise QueueError("Invalid queue mode")
     allowlist = None
     if mode in {"once", "loop", "isolate_reviewed_service_failure"}:
-        allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=(mode != "once"))
+        allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=(mode == "loop"))
     with LOCK.open("a+b") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
