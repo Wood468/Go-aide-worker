@@ -62,6 +62,11 @@ a stopped trace alone is not proof of a result. Twenty traces are retained, so
 copy the reviewed public receipt onto its GitHub task immediately. Traces are a
 transport fallback, not the durable task ledger.
 
+Only `worker_receipt.details` is bounded. The service action's trace also retains
+the raw `codex_result`, including prompt/history/attachments; this is not a
+redaction or whole-trace size guarantee. Keep HA trace access private and publish
+only independently inspected public patch evidence, never the entire trace.
+
 The bridge only reads results and can be disabled independently. It never
 starts/replies to/retries a task, runs generated code, publishes or merges.
 
