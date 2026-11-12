@@ -75,7 +75,7 @@ class SectionEditing(unittest.TestCase):
                                self.contract_for(original), lambda *args: self.fail('Secret context sent'))
 
     def test_bad_or_noop_model_replies_rejected(self):
-        for replacement in ('', self.section.decode(), 'x' * 40001, '\0', '\ud800', None,
+        for replacement in ('', self.section.decode(), 'x' * 40001, '\0', '\b', '\x7f', '\ud800', None,
                             'ghp_untrusted', 'AIzauntrusted', '-----BEGIN PRIVATE KEY-----'):
             with self.subTest(kind=type(replacement).__name__, length=len(replacement or '')):
                 with self.assertRaises(editor.SectionEditError):

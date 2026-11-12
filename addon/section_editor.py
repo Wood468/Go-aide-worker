@@ -7,6 +7,7 @@ import hashlib
 import re
 
 from direct_editor import generate
+from text_safety import unsafe_controls
 
 MAX_SOURCE_BYTES = 250_000
 MAX_SECTION_BYTES = 40_000
@@ -50,7 +51,7 @@ def locate(original, contract):
     end = end_start + len(anchors[1])
     if end_start < start + len(anchors[0]) or end - start > MAX_SECTION_BYTES:
         raise SectionEditError('Invalid section bounds')
-    if any(marker in original[start:end] for marker in SECRET_MARKERS):
+    if unsafe_controls(original[start:end]) or any(marker in original[start:end] for marker in SECRET_MARKERS):
         raise SectionEditError('Unsafe section context')
     return start, end
 
@@ -65,7 +66,7 @@ def verify(original, updated, contract):
         raise SectionEditError('Section edit escaped bounds')
     tail = len(original) - end
     replacement = updated[start:len(updated) - tail if tail else len(updated)]
-    if not replacement or len(replacement) > MAX_SECTION_BYTES:
+    if not replacement or len(replacement) > MAX_SECTION_BYTES or unsafe_controls(replacement):
         raise SectionEditError('Invalid section replacement')
     # Compare exact composition too: prefix/suffix must not overlap.
     if updated != original[:start] + replacement + original[end:]:

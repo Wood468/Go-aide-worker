@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 
 import job_runner
+from text_safety import unsafe_controls
 
 MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
 MAX_INPUT = 12_000  # Larger text uses exact patches, avoiding oversized full-file model replies.
@@ -161,7 +162,7 @@ def edit(workspace, selected, prompt, key, generator=generate):
     if not isinstance(updated, str) or not updated or updated == original:
         raise DirectEditError("No content change produced")
     raw = updated.encode("utf-8")
-    if len(raw) > MAX_FILE_BYTES or b"\0" in raw or any(marker in raw for marker in
+    if len(raw) > MAX_FILE_BYTES or unsafe_controls(raw) or any(marker in raw for marker in
                 (b"github_pat_", b"ghp_", b"-----BEGIN PRIVATE KEY-----")):
         raise DirectEditError("Edited file failed content safety checks")
     # Atomic replacement of a regular file; never run generated code.

@@ -52,11 +52,61 @@ class CacheContractTests(unittest.TestCase):
             b"/today.js?v=20261116a",b"/today.js?v=20261116a-w501"))
         self.assertEqual(self.sw.read_bytes(),old_sw.replace(
             b"/today.js?v=20261116a",b"/today.js?v=20261116a-w501").replace(
-            b"gofn-shell-v290",b"gofn-shell-v290-w501"))
+            b"gofn-shell-v290",b"gofn-shell-v291"))
         paths=[p for p,_ in publisher.safe_files(self.root)[1]]
         self.assertEqual(paths,["public/index.html","public/sw.js"])
         with self.assertRaises(cache_contract.CacheContractError):
             cache_contract.apply(self.root,self.source,"501")
+
+    def test_consecutive_source_tasks_replace_identity_and_increment_numeric_shell(self):
+        cache_contract.apply(self.root, self.source, '501')
+        self.assertIn(b"gofn-shell-v291", self.sw.read_bytes())
+        self.git('add', '.'); self.git('commit', '-qm', 'First reviewed cache change')
+        with self.assertRaises(cache_contract.CacheContractError):
+            cache_contract.apply(self.root, self.source, '501')
+        self.assertTrue(cache_contract.apply(self.root, self.source, '502'))
+        self.assertIn(b'/today.js?v=20261116a-w502', self.index.read_bytes())
+        self.assertNotIn(b'-w501', self.index.read_bytes())
+        self.assertIn(b"gofn-shell-v292", self.sw.read_bytes())
+        self.assertNotIn(b'gofn-shell-v291-', self.sw.read_bytes())
+        self.assertTrue(cache_contract.verify(self.root, self.source, '502'))
+
+    def test_custom_source_version_survives_consecutive_worker_tasks(self):
+        for target in (self.index, self.sw):
+            target.write_bytes(target.read_bytes().replace(b'20261116a', b'20261116a-fix'))
+        self.git('add', '.'); self.git('commit', '-qm', 'Custom source token')
+        cache_contract.apply(self.root, self.source, '501')
+        self.git('add', '.'); self.git('commit', '-qm', 'First worker token')
+        cache_contract.apply(self.root, self.source, '502')
+        self.assertIn(b'20261116a-fix-w502', self.index.read_bytes())
+        self.assertNotIn(b'-w501', self.index.read_bytes())
+
+    def test_ambiguous_worker_suffix_chains_are_rejected(self):
+        for token in (b'20261116a-w501-w502', b'20261116a-foo-bar', b'20261116a-w0'):
+            for target in (self.index, self.sw):
+                target.write_bytes(target.read_bytes().replace(b'20261116a', token))
+            self.git('add', '.'); self.git('commit', '-qm', 'Invalid token fixture')
+            before = self.index.read_bytes(), self.sw.read_bytes()
+            with self.assertRaises(cache_contract.CacheContractError):
+                cache_contract.apply(self.root, self.source, '503')
+            self.assertEqual((self.index.read_bytes(), self.sw.read_bytes()), before)
+            self.git('reset', '--hard', 'HEAD~1')
+
+    def test_task_ids_must_be_positive_ascii_github_numbers(self):
+        for value in ('0', '01', '-1', '', '1' * 11, '١', '1/2', True):
+            with self.subTest(value=value), self.assertRaises(cache_contract.CacheContractError):
+                cache_contract.apply(self.root, self.source, value)
+        self.assertEqual(self.git('status', '--porcelain').strip(), '')
+
+    def test_noncanonical_or_exhausted_shell_names_fail_without_mutation(self):
+        for name in (b'gofn-shell-v290-w501', b'gofn-shell-v999999999'):
+            self.sw.write_bytes(self.sw.read_bytes().replace(b'gofn-shell-v290', name))
+            self.git('add', '.'); self.git('commit', '-qm', 'Invalid shell fixture')
+            before = self.index.read_bytes(), self.sw.read_bytes()
+            with self.assertRaises(cache_contract.CacheContractError):
+                cache_contract.apply(self.root, self.source, '502')
+            self.assertEqual((self.index.read_bytes(), self.sw.read_bytes()), before)
+            self.git('reset', '--hard', 'HEAD~1')
 
     def test_rejects_unreviewed_cache_edits_and_traversal(self):
         for path in ("../today.js","public/../../.env","public/today.css",

@@ -8,11 +8,25 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.26: compatible, repeatable deterministic cache updates
+
+The first source/test/cache pilot exposed that worker-suffixed shell names violate the existing application cache contract. The helper now increments the numeric `gofn-shell-vN` revision; application tests remain unchanged. Source URL tokens replace a prior worker suffix rather than rejecting or chaining it, so subsequent tasks on the same file work without code changes. Positive ASCII issue IDs, numeric revision limits, exact baseline matching and independent publisher recomputation remain fail-closed. No broader model access to cache files or merge authority is introduced.
+
+## v0.5.25: reject hidden control bytes before writing or publishing
+
+Independent review of source/test/cache pilot #595 / app draft #596 found literal backspace bytes in a model-generated JavaScript regex (JSON `\\b` escaping was wrong), plus a test using the wrong API. The shared UTF-8 text guard now rejects C0 controls other than tab/newline/carriage return, and DEL, in both the editor before atomic replacement and the independent publisher. Correct escaped regex bytes, Unicode and ordinary whitespace remain unchanged. This guard prevents hidden byte corruption; semantic correctness still requires independent review and full CI. No automatic repair, task retry, scope expansion or source merge permission is added.
+
+## v0.5.24: reconcile the failed source-anchor pilot without retry
+
+Controlled source/test task #594 failed at edit-source/anchor on installed v0.5.23: Gemini returned an old fragment that did not match uniquely. The exact-patch safety check refused it; no PR was created. The raw provider response remains private, so missing versus duplicated text is unconfirmed. Approval was removed.
+
+The credential-free `queue_retire_max_anchor_task` can retire only this exact one-attempt failure, with its original complete contract and stored SHA-256, after deapproval and complete bounded PR/worker-branch checks. It never edits, publishes, retries or clears another record. It shares the existing fully tested #563 audit; that historical action retains its fixed contract and behavior. Install idle/off, run retirement with queue opt-in only, verify the ledger, return idle/off. Any subsequent source pilot must be a NEW issue and include the deterministic cache contract required by current app CI. No source auto-merge is permitted.
+
 ## Bounded-section foundation (inactive; issue #30)
 
-`section_editor.py` resolves an explicitly approved pair of unique anchors against a SHA-256-bound UTF-8 baseline of at most 250 KB, sends at most 40 KB of selected context to the existing exact-patch generator, and independently proves all outside bytes unchanged. It rejects stale/ambiguous anchors, binary/invalid text, oversized/no-op output and credential markers. It performs no file writes or command execution.
+`section_editor.py` resolves explicit unique anchors against a SHA-256-bound UTF-8 baseline of at most 250 KB, sends at most 40 KB of selected context to the existing exact-patch generator, and independently proves all outside bytes unchanged. It preserves CRLF/Unicode and rejects stale/ambiguous anchors, invalid or oversized/no-op output, credential markers and hidden control bytes before model input and after generation.
 
-This primitive is deliberately **not wired into the queue or publisher**: neither the 100 KB publication cap nor the source allowlist changes. Activation still requires a versioned immutable task contract, independent publisher verification of the original baseline and section bounds, credential-free syntax checks, CI, installation and controlled acceptance. Cache changes remain exclusively deterministic.
+This primitive is **not wired into the queue or publisher**. The 100 KB publication cap and approved source allowlists remain unchanged. Activation requires a versioned immutable section contract, independent publisher baseline/bounds verification, syntax checks, CI, installation and controlled acceptance. Cache edits remain exclusively deterministic.
 
 ## v0.5.23: immutable source-task publication contract
 
