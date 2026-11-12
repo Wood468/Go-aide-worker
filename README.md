@@ -4,6 +4,10 @@
 
 This add-on can run an **opt-in GitHub-approved task queue** without exposing an inbound network service or unconstrained shell agent.
 
+For independent overnight coordination and the existing Codex fallback, see
+[the result handoff runbook](docs/coordinator-result-handoff.md). The coordinator
+must prove result retrieval before allocating work; a queued job is not completion.
+
 ## v0.5.33: autonomous bounded large-file queue
 
 The new `queue_large_file_loop` action polls approved version-4 section tasks every ten minutes. It runs the existing large-file editor, related regression edit, credential-free syntax checks, deterministic cache synchronization and independent draft publisher without a separate Queue Once invocation for each task. The existing `queue_loop` remains test-only.
