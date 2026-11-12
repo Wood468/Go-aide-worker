@@ -66,6 +66,20 @@ class SingleFileEditorTests(unittest.TestCase):
         self.assertEqual(editor.generate('fixture', 'bounded task', 'WORKER_SMOKE_TEST.txt',
                                          'old', lambda *args, **kwargs: response), 'updated')
 
+    def test_queue_existing_small_file_uses_exact_patch_without_rewriting_original(self):
+        original = 'function stableHelper() { return /\\.example$/.test("value"); }\n'
+        def opener(req, timeout):
+            schema = json.loads(req.data)['generationConfig']['responseSchema']
+            self.assertIn('replacements', schema['properties'])
+            return FakeResponse({'path': 'WORKER_SMOKE_TEST.txt', 'replacements': [{
+                'old': 'function stableHelper()', 'new': '// Reviewed comment\nfunction stableHelper()'}]})
+        with patch.dict(os.environ, {'GO_WORKER_QUEUE_EDIT': '1'}):
+            updated = editor.generate('fixture', 'Insert comment only',
+                                      'WORKER_SMOKE_TEST.txt', original, opener)
+        self.assertEqual(updated, '// Reviewed comment\n' + original)
+        with self.assertRaises(editor.DirectEditError):
+            editor.apply_replacements('a' * 13, [{'old': 'a' * 12, 'new': 'replacement text'}])
+
     def test_creates_only_selected_file(self):
         with patch.dict(os.environ,{"EDIT_FILES":"WORKER_SMOKE_TEST.txt"}):
             self.assertTrue(editor.edit(self.folder,["WORKER_SMOKE_TEST.txt"],"test","dummy",

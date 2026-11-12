@@ -198,6 +198,45 @@ class SectionPipeline(unittest.TestCase):
             self.assertEqual(len(publications), 1)
             self.assertEqual(q.read_ledger(ledger)['701']['state'], 'submitted')
 
+    def test_readonly_actual_node_diagnosis_emits_no_generated_source_or_credentials(self):
+        import contextlib
+        import io
+        import shutil
+        self.changed()
+        target = self.root / self.paths[1]
+        target.write_bytes(b'const privateGeneratedName = 1;\nconst privateGeneratedName = 2;\n')
+        before = {path: (self.root / path).read_bytes() for path in self.paths}
+        task = q.parse_task(self.issue)
+        output = io.StringIO()
+        def node(command, **kwargs):
+            self.assertNotIn('GITHUB_TOKEN', kwargs['env'])
+            self.assertNotIn('GEMINI_API_KEY', kwargs['env'])
+            return subprocess.run([shutil.which('node'), *command[1:]], **kwargs)
+        with patch('cache_contract.verify'), contextlib.redirect_stdout(output), \
+             patch.dict(os.environ, {'GITHUB_TOKEN': 'SECRET_GITHUB', 'GEMINI_API_KEY': 'SECRET_GEMINI'}):
+            result = q.diagnose_section_syntax(self.root, task, runner=node)
+        self.assertEqual(result['source-baseline'], 'pass')
+        self.assertEqual(result['source-updated'], 'pass')
+        self.assertEqual(result['test-baseline'], 'pass')
+        self.assertEqual(result['test-updated'], 'duplicate-binding')
+        self.assertNotIn('privateGeneratedName', output.getvalue())
+        self.assertNotIn('SECRET_', output.getvalue())
+        self.assertEqual(before, {path: (self.root / path).read_bytes() for path in self.paths})
+        # A held row must not be retired when the failure cannot be reproduced.
+        target.write_bytes(b'// updated valid test\n')
+        with patch('cache_contract.verify'), contextlib.redirect_stdout(output):
+            with self.assertRaises(q.QueueError):
+                q.diagnose_section_syntax(self.root, task, runner=node)
+        # Nor may a pre-existing baseline syntax error be blamed on the edit.
+        target.write_bytes(b'const duplicate = 1; const duplicate = 2;\n')
+        self.git('add', self.paths[1])
+        self.git('commit', '-qm', 'invalid baseline fixture')
+        target.write_bytes(target.read_bytes() + b'// updated test\n')
+        with patch('cache_contract.verify'), contextlib.redirect_stdout(output):
+            with self.assertRaises(q.QueueError):
+                q.diagnose_section_syntax(self.root, task, runner=node)
+
+
 
 class DashboardCacheContract(unittest.TestCase):
     def setUp(self):
