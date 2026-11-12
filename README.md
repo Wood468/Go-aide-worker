@@ -38,11 +38,15 @@ Controlled source/test task #594 failed at edit-source/anchor on installed v0.5.
 
 The credential-free `queue_retire_max_anchor_task` can retire only this exact one-attempt failure, with its original complete contract and stored SHA-256, after deapproval and complete bounded PR/worker-branch checks. It never edits, publishes, retries or clears another record. It shares the existing fully tested #563 audit; that historical action retains its fixed contract and behavior. Install idle/off, run retirement with queue opt-in only, verify the ledger, return idle/off. Any subsequent source pilot must be a NEW issue and include the deterministic cache contract required by current app CI. No source auto-merge is permitted.
 
-## Bounded-section foundation (inactive; issue #30)
+## Bounded-section single-run tasks (v0.5.29; issue #30)
 
-`section_editor.py` resolves explicit unique anchors against a SHA-256-bound UTF-8 baseline of at most 250 KB, sends at most 40 KB of selected context to the existing exact-patch generator, and independently proves all outside bytes unchanged. It preserves CRLF/Unicode and rejects stale/ambiguous anchors, invalid or oversized/no-op output, credential markers and hidden control bytes before model input and after generation.
+Queue Once accepts an owner-approved version-4 contract with exactly `version`, `paths`, `instruction`, and `section`. Paths are an existing source/test pair followed by `public/index.html` and `public/sw.js`. The additional pair `public/dash.js` + `test/event-detail-source-confidence.test.mjs` is section-only. The section object binds exactly version 1, path, instruction (equal to the outer instruction), sha256, start and end anchors. The full contract fingerprint is retained and rechecked before publication and after branch creation.
 
-This primitive is **not wired into the queue or publisher**. The 100 KB publication cap and approved source allowlists remain unchanged. The inactive v1 request schema binds exactly `version`, `path`, `instruction`, `sha256`, `start` and `end`. `propose_task` uses only that instruction and requires the caller's expected path to match one of the existing source/test-pair source paths; HTML, service-worker and unknown paths are rejected. `verify_task` independently checks the same contract and outside-byte preservation without model access. This schema is NOT a queue task version: dispatch continues to reject it. Activation still requires immutable queue-contract binding, actual publisher baseline/bounds wiring, syntax checks, CI, installation and controlled acceptance. Cache edits remain exclusively deterministic.
+Only the named source may exceed 100 KB, up to 250 KB. Gemini receives at most 40 KB of selected context. The independent publisher reads the original tracked HEAD bytes, verifies the approved hash, and proves every byte outside the section unchanged. Other files keep the 100 KB cap; section-task aggregate content is capped at 400 KB. Test edits and deterministic cache updates are required. Node parses source/test syntax without executing generated code in Home Assistant.
+
+Queue Loop rejects all versioned source tasks. Section editing cannot be requested by manual Direct Edit options. Editing and publishing require the existing explicit opt-ins and file allowlist. The coding worker creates a draft PR only; production-source auto-merge remains disabled. Failed or ambiguous publication requires review, never automatic replay.
+
+Activation evidence and the controlled live acceptance result are tracked in PR #51 and issue #30. A repository merge alone is not an installed or accepted release.
 
 ## v0.5.23: immutable source-task publication contract
 

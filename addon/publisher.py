@@ -93,7 +93,7 @@ def local_git(workspace, *args):
     return result.stdout
 
 
-def safe_files(workspace):
+def safe_files(workspace, section_contract=None):
     workspace = Path(workspace)
     if workspace.is_symlink() or not (workspace / ".git").is_dir() or (workspace / ".git").is_symlink():
         raise PublishError("Invalid checkout")
@@ -138,12 +138,21 @@ def safe_files(workspace):
         if not stat.S_ISREG(mode) or mode & 0o111:
             raise PublishError("Executable and special files are disallowed")
         data = path.read_bytes()
-        if not data or len(data) > MAX_FILE_BYTES or unsafe_controls(data):
+        limit = MAX_FILE_BYTES
+        if section_contract is not None and rel == section_contract.get('path'):
+            import section_editor
+            try:
+                original = local_git(workspace, 'show', 'HEAD:' + rel)
+                section_editor.verify_task(original, data, section_contract, rel)
+            except (section_editor.SectionEditError, KeyError, TypeError):
+                raise PublishError('Section baseline or bounds changed') from None
+            limit = section_editor.MAX_SOURCE_BYTES
+        if not data or len(data) > limit or unsafe_controls(data):
             raise PublishError("Empty, oversized or binary file")
         if any(marker in data for marker in SECRET_MARKERS):
             raise PublishError("Possible credential found in changed file")
         total += len(data)
-        if total > MAX_TOTAL_BYTES:
+        if total > (400_000 if section_contract is not None else MAX_TOTAL_BYTES):
             raise PublishError("Total patch exceeds limit")
         files.append((rel, data))
     return head, files
@@ -173,7 +182,21 @@ def api(token, method, endpoint, payload=None):
 def publish(workspace, token, request=api, branch_id=None):
     if not isinstance(token, str) or not token.strip():
         raise PublishError("Missing GitHub token")
-    local_head, files = safe_files(workspace)
+    section = None
+    section_task = None
+    if os.environ.get('WORKER_SECTION_CONTRACT') is not None:
+        if not os.environ.get('WORKER_APPROVED_PATHS'):
+            raise PublishError('Section publishing requires approved task')
+        import queue_worker
+        ident = os.environ.get('WORKER_ISSUE_NUMBER', '')
+        if not re.fullmatch('[1-9][0-9]{0,9}', ident):
+            raise PublishError('Approved task issue missing')
+        section_task = queue_worker.parse_task(request(token, 'GET', '/issues/' + ident))
+        if section_task and section_task.get('version') == 4:
+            if queue_worker.task_fingerprint(section_task) != os.environ.get('WORKER_TASK_SHA256'):
+                raise PublishError('Approved GitHub task was revoked or changed')
+            section = section_task['section']
+    local_head, files = safe_files(workspace, **({'section_contract': section} if section else {}))
     if os.environ.get("WORKER_ISSUE_NUMBER"):
         try:
             allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"))
@@ -198,7 +221,7 @@ def publish(workspace, token, request=api, branch_id=None):
             raise PublishError("Invalid approved paths")
         is_pair = len(approved) == 2 and tuple(approved) in queue_worker.SOURCE_TEST_PAIRS
         is_cache = (len(approved) == 4
-                    and tuple(approved[:2]) in queue_worker.SOURCE_TEST_PAIRS
+                    and tuple(approved[:2]) in (queue_worker.SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS if section else queue_worker.SOURCE_TEST_PAIRS)
                     and approved[2:] == ["public/index.html", "public/sw.js"])
         if not (is_pair or is_cache) or [path for path, _ in files] != sorted(approved):
             raise PublishError("Edited files differ from approved task scope")
@@ -212,7 +235,7 @@ def publish(workspace, token, request=api, branch_id=None):
             local_git(workspace, "ls-files", "--error-unmatch", "--", relative)
         source = request(token, "GET", "/issues/" + issue_number)
         task = queue_worker.parse_task(source)
-        if (not task or task.get("version") != (3 if is_cache else 2)
+        if (not task or task.get("version") != (4 if section else 3 if is_cache else 2)
                 or task["issue"] != int(issue_number)
                 or task["paths"] != approved
                 or queue_worker.task_fingerprint(task) != os.environ.get("WORKER_TASK_SHA256")):

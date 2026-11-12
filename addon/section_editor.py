@@ -15,7 +15,7 @@ SECRET_MARKERS = (b'github_pat_', b'ghp_', b'gho_', b'AIza',
                   b'-----BEGIN PRIVATE KEY-----')
 
 
-class SectionEditError(Exception):
+class SectionEditError(ValueError):
     pass
 
 
@@ -100,14 +100,19 @@ def propose(key, prompt, path, original, contract, generator=generate):
 
 def task_contract(contract, expected_path):
     """Validate an inactive v1 section request; live queue accepts no such schema."""
-    from queue_scope import SOURCE_TEST_PAIRS
+    from queue_scope import SOURCE_TEST_PAIRS, SECTION_SOURCE_TEST_PAIRS
     fields = {'version', 'path', 'instruction', 'sha256', 'start', 'end'}
     if (not isinstance(contract, dict) or set(contract) != fields
             or type(contract['version']) is not int or contract['version'] != 1
             or not isinstance(expected_path, str)
-            or expected_path not in {pair[0] for pair in SOURCE_TEST_PAIRS}
+            or expected_path not in {pair[0] for pair in SOURCE_TEST_PAIRS | SECTION_SOURCE_TEST_PAIRS}
             or contract['path'] != expected_path):
         raise SectionEditError('Invalid section task contract')
+    if (not isinstance(contract['sha256'], str)
+            or not re.fullmatch('[a-f0-9]{64}', contract['sha256'])
+            or any(not isinstance(contract[k], str) or not 12 <= len(contract[k]) <= 512
+                   or not contract[k].strip() for k in ('start', 'end'))):
+        raise SectionEditError('Invalid section task bounds')
     instruction = contract['instruction']
     if not isinstance(instruction, str) or not 20 <= len(instruction) <= 1500:
         raise SectionEditError('Invalid section instruction')

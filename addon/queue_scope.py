@@ -10,7 +10,8 @@ SOURCE_TEST_PAIRS = {
     ('public/detail.js', 'test/event-detail-source-confidence.test.mjs'),
     ('public/app.js', 'test/universal-event.test.mjs'),
 }
-SOURCE_PATHS = {pair[0] for pair in SOURCE_TEST_PAIRS} | {'public/index.html', 'public/sw.js'}
+SECTION_SOURCE_TEST_PAIRS = {('public/dash.js', 'test/event-detail-source-confidence.test.mjs')}
+SOURCE_PATHS = {pair[0] for pair in SOURCE_TEST_PAIRS | SECTION_SOURCE_TEST_PAIRS} | {'public/index.html', 'public/sw.js'}
 
 
 class ScopeError(ValueError):

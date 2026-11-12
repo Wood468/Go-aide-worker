@@ -138,19 +138,26 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
     return updated["content"]
 
 
-def edit(workspace, selected, prompt, key, generator=generate):
+def edit(workspace, selected, prompt, key, generator=generate, section_contract=None):
     workspace = Path(workspace)
     if workspace.is_symlink() or not workspace.is_dir() or (workspace / ".git").is_symlink() or not (workspace / ".git").is_dir():
         raise DirectEditError("Invalid isolated checkout")
     if selected != job_runner.selected_edit_files(workspace) or len(selected) != 1:
         raise DirectEditError("Exactly one validated edit target required")
     relative = selected[0]
+    limit = MAX_FILE_BYTES
+    if section_contract is not None:
+        import section_editor
+        section_editor.task_contract(section_contract, relative)
+        if prompt != section_contract['instruction']:
+            raise DirectEditError('Section instruction mismatch')
+        limit = section_editor.MAX_SOURCE_BYTES
     target = workspace / relative
     if target.is_symlink() or not target.parent.is_dir() or target.parent.is_symlink():
         raise DirectEditError("Unsafe edit destination")
     if not target.exists():
         target.touch(mode=0o600, exist_ok=False)
-    if not target.is_file() or target.stat().st_size > MAX_FILE_BYTES:
+    if not target.is_file() or target.stat().st_size > limit:
         raise DirectEditError("Selected file is invalid or oversized")
     try:
         # Keep CRLF exactly as checked out. Path.read_text() normalises newlines
@@ -159,11 +166,15 @@ def edit(workspace, selected, prompt, key, generator=generate):
             original = source.read()
     except UnicodeError:
         raise DirectEditError("Only UTF-8 text files are supported") from None
-    updated = generator(key, prompt, relative, original)
+    if section_contract is not None:
+        updated = section_editor.propose_task(key, relative, original.encode('utf-8'),
+                                               section_contract, generator).decode('utf-8')
+    else:
+        updated = generator(key, prompt, relative, original)
     if not isinstance(updated, str) or not updated or updated == original:
         raise DirectEditError("No content change produced")
     raw = updated.encode("utf-8")
-    if len(raw) > MAX_FILE_BYTES or unsafe_controls(raw) or any(marker in raw for marker in
+    if len(raw) > limit or unsafe_controls(raw) or any(marker in raw for marker in
                 (b"github_pat_", b"ghp_", b"-----BEGIN PRIVATE KEY-----")):
         raise DirectEditError("Edited file failed content safety checks")
     # Atomic replacement of a regular file; never run generated code.
@@ -204,7 +215,13 @@ def main():
             job = json.load(inp)
         if not isinstance(job, dict) or job.get("action") != "direct_edit":
             raise DirectEditError("Unexpected edit job")
-        edit(job_runner.WORKSPACE, selection, job.get("prompt", ""), os.environ.get("GEMINI_API_KEY", ""))
+        section = None
+        if 'WORKER_SECTION_CONTRACT' in os.environ:
+            if os.environ.get('GO_WORKER_QUEUE_EDIT') != '1':
+                raise DirectEditError('Section editing requires queue dispatch')
+            section = json.loads(os.environ['WORKER_SECTION_CONTRACT'])
+        edit(job_runner.WORKSPACE, selection, job.get("prompt", ""), os.environ.get("GEMINI_API_KEY", ""),
+             **({"section_contract": section} if section is not None else {}))
         print("Direct Gemini selected-file edit completed", flush=True)
     except (DirectEditError, job_runner.JobError, ValueError, OSError, TypeError) as e:
         # These errors are controlled, but never expose arbitrary exception content.
