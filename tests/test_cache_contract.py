@@ -155,6 +155,7 @@ class CacheContractTests(unittest.TestCase):
                 if endpoint=="/pulls":return {"number":502,"draft":True}
                 self.fail("Unexpected API path")
             with patch.dict(os.environ,{"WORKER_ISSUE_NUMBER":"501",
+                   "WORKER_FILE_ALLOWLIST":json.dumps(pair), "WORKER_DISPATCH_SCOPE":json.dumps(pair),
                    "WORKER_APPROVED_PATHS":json.dumps(pair),
                    "WORKER_TASK_SHA256":queue_worker.task_fingerprint(queue_worker.parse_task(issue()))}):
                 try:
@@ -175,6 +176,7 @@ class CacheContractTests(unittest.TestCase):
         self.sw.write_bytes(cache_contract.expected(self.root,self.source,"501")["public/sw.js"])
         (self.root / "README.md").write_text("unexpected")
         with patch.dict(os.environ,{"WORKER_ISSUE_NUMBER":"501",
+                   "WORKER_FILE_ALLOWLIST":json.dumps(pair), "WORKER_DISPATCH_SCOPE":json.dumps(pair),
                        "WORKER_APPROVED_PATHS":json.dumps(pair)}):
             with self.assertRaises(publisher.PublishError):
                 publisher.publish(self.root,"dummy",lambda *args:self.fail("No API"))

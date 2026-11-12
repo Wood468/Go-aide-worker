@@ -11,6 +11,8 @@ import sys
 import time
 import signal
 import threading
+import queue_scope
+from queue_scope import SOURCE_TEST_PAIRS
 import urllib.error
 import urllib.request
 
@@ -24,12 +26,6 @@ LOCK = ROOT / ".go-queue.lock"
 PATH_RE = re.compile(r"(?:docs/worker-task-[a-z0-9-]{1,50}\.md|test/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.test\.mjs)")
 TASK_RE = re.compile(r"^GO_WORKER_TASK_JSON:(\{[^\n]{1,2400}\})$", re.MULTILINE)
 # Reviewed source-to-test pairs; no arbitrary source grant.
-SOURCE_TEST_PAIRS = {
-    ("public/event-components.js", "test/event-components-crowned-alias.test.mjs"),
-    ("public/today.js", "test/today-logic.test.mjs"),
-    ("public/detail.js", "test/event-detail-source-confidence.test.mjs"),
-    ("public/app.js", "test/universal-event.test.mjs"),
-}
 
 
 class QueueError(Exception):
@@ -1159,6 +1155,9 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
 
 
 def perform(task, state, fetch=github_read, runner=child_run):
+    if "WORKER_FILE_ALLOWLIST" in os.environ and not queue_scope.permits(
+            task, queue_scope.parse(os.environ["WORKER_FILE_ALLOWLIST"])):
+        raise QueueError("Task outside explicit queue allowlist")
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
         return False
@@ -1248,8 +1247,13 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
                                        "/issues/" + key)) != task:
             raise QueueError("Multi-file approval revoked before publication")
+        global_scope = queue_scope.parse(os.environ["WORKER_FILE_ALLOWLIST"]) if "WORKER_FILE_ALLOWLIST" in os.environ else paths
+        if not queue_scope.permits(task, global_scope):
+            raise QueueError("Task outside explicit queue allowlist")
         publication_env = child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true",
-                                    WORKER_ISSUE_NUMBER=key)
+                                    WORKER_ISSUE_NUMBER=key,
+                                    WORKER_FILE_ALLOWLIST=json.dumps(global_scope),
+                                    WORKER_DISPATCH_SCOPE=json.dumps(paths))
         if multi:
             publication_env["WORKER_APPROVED_PATHS"] = json.dumps(paths)
             publication_env["WORKER_TASK_SHA256"] = contract_sha
@@ -1281,13 +1285,17 @@ def perform(task, state, fetch=github_read, runner=child_run):
 
 
 def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
-         unattended=False):
+         unattended=False, allowlist=None):
+    if allowlist is not None:
+        allowlist = queue_scope.validate(allowlist, unattended=unattended)
     tasks = candidates(fetch)
     if unattended:
         # Continuous background execution is limited to the previously proven
         # legacy single-file docs / existing flat test contract. Version-two
         # and version-three source+test jobs require an explicit manual pilot.
         tasks = [task for task in tasks if "version" not in task]
+    if allowlist is not None:
+        tasks = [t for t in tasks if queue_scope.permits(t, allowlist, unattended)]
     state = read_ledger(ledger_path)
     if scan:
         waiting = sum(approved_for_dispatch(t, state) for t in tasks)
@@ -1318,13 +1326,16 @@ def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
     if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task", "retire_max_anchor_task"):
         raise QueueError("Invalid queue mode")
+    allowlist = None
+    if mode in {"once", "loop"}:
+        allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=(mode == "loop"))
     with LOCK.open("a+b") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise QueueError("Another queue worker holds the lock") from None
         if mode == "loop":
-            print("Approved queue active: legacy single-file tasks only; one draft PR at a time", flush=True)
+            print("Approved queue active: explicit test-file allowlist only; one draft PR at a time", flush=True)
             shutdown = threading.Event()
             previous_handler = signal.getsignal(signal.SIGTERM)
             def request_shutdown(_signum, _frame):
@@ -1335,7 +1346,7 @@ def main():
             try:
                 while not shutdown.is_set():
                     try:
-                        once(unattended=True)
+                        once(unattended=True, allowlist=allowlist)
                     except (QueueError, OSError, ValueError):
                         print("Queue iteration failed; task held for review", flush=True)
                     shutdown.wait(600)
@@ -1371,7 +1382,7 @@ def main():
         elif mode == "retire_max_anchor_task":
             retire_failed_max_anchor_task()
         else:
-            once(scan=(mode == "scan"))
+            once(scan=(mode == "scan"), allowlist=allowlist)
 
 
 if __name__ == "__main__":

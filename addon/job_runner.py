@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 import subprocess
 import sys
+import queue_scope
 import tempfile
 
 WORKSPACE = Path("/data/workspace/source")
@@ -88,6 +89,11 @@ def validate_job(raw, workspace=WORKSPACE):
         raise JobError("Edits disabled; ENABLE_EDITS must be true")
     if action in {"edit", "direct_edit"} and not os.environ.get("GEMINI_API_KEY"):
         raise JobError("Gemini key not configured")
+    if action in {"queue_once", "queue_loop"}:
+        try:
+            queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=(action == "queue_loop"))
+        except queue_scope.ScopeError:
+            raise JobError("Queue requires an explicit safe file allowlist") from None
     if action in {"queue_once", "queue_loop"} and (os.environ.get("ENABLE_QUEUE") != "true" or not os.environ.get("GITHUB_TOKEN") or not os.environ.get("GEMINI_API_KEY")):
         raise JobError("Queue execution not explicitly enabled")
     if action == "probe" and not os.environ.get("GEMINI_API_KEY"):
@@ -255,7 +261,7 @@ def run(job_file=JOB_FILE, workspace=WORKSPACE):
     cmd = command_for(action, prompt)
     if action == "queue_loop":
         # Long-lived opt-in service; use exec instead of the five-minute one-job timeout.
-        env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "PYTHONDONTWRITEBYTECODE", "GEMINI_API_KEY", "GITHUB_TOKEN", "ENABLE_QUEUE") if key in os.environ}
+        env = {key: os.environ[key] for key in ("PATH", "HOME", "LANG", "PYTHONDONTWRITEBYTECODE", "GEMINI_API_KEY", "GITHUB_TOKEN", "ENABLE_QUEUE", "WORKER_FILE_ALLOWLIST") if key in os.environ}
         os.execve(sys.executable, cmd, env)
     # Never log prompts, credentials, or command arguments.
     print(f"Starting bounded local job: {action}", flush=True)
