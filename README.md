@@ -8,6 +8,12 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.24: reconcile the failed source-anchor pilot without retry
+
+Controlled source/test task #594 failed at edit-source/anchor on installed v0.5.23: Gemini returned an old fragment that did not match uniquely. The exact-patch safety check refused it; no PR was created. The raw provider response remains private, so missing versus duplicated text is unconfirmed. Approval was removed.
+
+The credential-free `queue_retire_max_anchor_task` can retire only this exact one-attempt failure, with its original complete contract and stored SHA-256, after deapproval and complete bounded PR/worker-branch checks. It never edits, publishes, retries or clears another record. It shares the existing fully tested #563 audit; that historical action retains its fixed contract and behavior. Install idle/off, run retirement with queue opt-in only, verify the ledger, return idle/off. Any subsequent source pilot must be a NEW issue and include the deterministic cache contract required by current app CI. No source auto-merge is permitted.
+
 ## v0.5.23: immutable source-task publication contract
 
 Source/test publishers now require a SHA-256 identity of the complete parsed task captured before editing, including its instruction. The isolated publisher compares the currently approved task to that identity before any GitHub write and again before creating the draft PR. Same-path instruction changes, missing fingerprints and revoked approval fail closed. A late revocation can leave an unpublished worker branch; the existing no-retry ledger requires review. No broader file grants or source auto-merge are introduced.

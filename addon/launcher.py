@@ -14,7 +14,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task"}
+ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -56,9 +56,9 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
-    if action in {"queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task"} and (enabled or publish_enabled):
+    if action in {"queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and (enabled or publish_enabled):
         raise ConfigurationError("Merged pilot acknowledgement requires editing and publishing disabled")
-    if action in {"queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task"} and not queue_enabled:
+    if action in {"queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and not queue_enabled:
         raise ConfigurationError("Pilot recovery requires explicit queue opt-in")
     if action in {"queue_once", "queue_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
         raise ConfigurationError("Queue requires all three opt-ins and both credentials")
@@ -68,7 +68,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
     if action in {"publish", "publish_test"} and (not publish_enabled or not github_token.strip()):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
-    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe", "queue_scan", "queue_once", "queue_loop", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task"} and prompt.strip():
+    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe", "queue_scan", "queue_once", "queue_loop", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
     return action, prompt, enabled, api_key, publish_enabled, github_token, ",".join(selected)
 
@@ -126,7 +126,7 @@ def main():
     action, prompt, enabled, api_key, publish_enabled, github_token, edit_files = read_options()
     protect_options()
     prepare_directory()
-    if action not in {"idle", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task"}:
+    if action not in {"idle", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"}:
         stage_job(action, prompt)
     # Set only the environment needed by the unprivileged worker.
     environment = {
@@ -155,7 +155,7 @@ def main():
     os.setgroups([])
     os.setgid(UID)
     os.setuid(UID)
-    if action in {"queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task"}:
+    if action in {"queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"}:
         # Read-only status or one tightly scoped ledger recovery. Neither
         # receives Gemini/GitHub secrets or any edit/publish permission.
         import preflight
@@ -172,7 +172,8 @@ def main():
                 "queue_retire_banner_cache_task": "retire_banner_cache_task",
                 "queue_retire_two_file_service_task": "retire_two_file_service_task",
                 "queue_retire_places_publish_task": "retire_places_publish_task",
-                "queue_retire_rotation_service_task": "retire_rotation_service_task"}[action]
+                "queue_retire_rotation_service_task": "retire_rotation_service_task",
+                "queue_retire_max_anchor_task": "retire_max_anchor_task"}[action]
         os.execve(sys.executable, [sys.executable, "/opt/worker/queue_worker.py", mode],
                   environment)
     if action == "idle":

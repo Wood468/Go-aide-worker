@@ -955,19 +955,40 @@ RETIRED_563_INSTRUCTION = "Edit ONLY existing tracked test/event-encounter-rotat
 
 
 def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
+    return _retire_reviewed_edit_failure(path, fetch, 563,
+        "[GO-WORKER] Unattended v1 regression: venue-local habitat DST boundaries",
+        {"path": "test/event-encounter-rotations.test.mjs", "instruction": RETIRED_563_INSTRUCTION},
+        {"state": "needs-review", "attempts": 1, "failure_stage": "edit-single", "failure_category": "service"},
+        {"test/event-encounter-rotations.test.mjs"}, "failed-rotation-edit-service-no-retry",
+        "Rotation edit-service task #563 safely retired without retry or PR")
+
+
+RETIRED_594_CONTRACT = {'version': 2, 'paths': ['public/today.js', 'test/today-logic.test.mjs'], 'instruction': "Implement one reusable Max Battle classification fix. In public/today.js change only raidTier's Max-name detection: preserve ev.kind === 'max' as an explicit match, but replace the broad substring /max/i with a case-insensitive whole-word match for Max, Dynamax or Gigantamax. Preserve the existing star/Mega/Shadow/Raid Hour precedence and all other code. In test/today-logic.test.mjs append a node:test regression that uses the existing createRequire import to load ../public/today.js inside the test. Assert raidTier returns null for kind:'event' with names 'Climax Celebration' and 'Maximum Rewards'; returns {stars:0,label:'Max Battle'} for 'Max Monday', 'Dynamax Battles', 'Gigantamax Battle Day' and mixed-case equivalents; and preserves explicit kind:'max' with an otherwise unrelated name. Also assert 5-star raids and Mega raids retain their existing labels. Keep all existing tests unchanged. Edit only the currently selected file on each invocation; do not add files, change caches, dependencies, UI markup or unrelated logic."}
+
+
+def retire_failed_max_anchor_task(path=LEDGER, fetch=github_read):
+    return _retire_reviewed_edit_failure(path, fetch, 594,
+        "[GO-WORKER] Controlled source/test pilot: match Max Battle names as whole words",
+        RETIRED_594_CONTRACT,
+        {"state": "needs-review", "attempts": 1, "failure_stage": "edit-source",
+         "failure_category": "anchor", "task_sha256": 'c0e799e5623e65eb882adf20079f6708f32cc96a83d7f5228cf8f50794c19a61'},
+        set(RETIRED_594_CONTRACT["paths"]), "failed-max-source-anchor-no-retry",
+        "Max source-anchor task #594 safely retired without retry or PR")
+
+
+def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
+                                  expected_failure, owned_paths, reason, message):
     """Retire only #563 after complete read-only no-publication verification.
 
     This action is deliberately NOT a generic retry/reset. It has no
     GitHub write capability and is launched with neither provider credential.
     """
     state = read_ledger(path)
-    previous = state.get("563")
-    if (not isinstance(previous, dict) or previous != {
-            "state": "needs-review", "attempts": 1,
-            "failure_stage": "edit-single", "failure_category": "service"}):
+    previous = state.get(str(number))
+    if (not isinstance(previous, dict) or previous != expected_failure):
         raise QueueError("Rotation service retirement is not eligible")
 
-    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/563")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/" + str(number))
     if not isinstance(issue, dict):
         raise QueueError("Rotation task issue unavailable")
     raw = issue.get("body")
@@ -977,18 +998,17 @@ def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
     except (ValueError, TypeError):
         contract = None
     labels = issue.get("labels")
-    if (type(issue.get("number")) is not int or issue["number"] != 563
+    if (type(issue.get("number")) is not int or issue["number"] != number
             or issue.get("state") != "open"
             or not isinstance(issue.get("user"), dict)
             or issue["user"].get("login", "").lower() != "wood468"
-            or issue.get("title") != "[GO-WORKER] Unattended v1 regression: venue-local habitat DST boundaries"
+            or issue.get("title") != title
             or not isinstance(labels, list)
             or any(not isinstance(label, dict) or not isinstance(label.get("name"), str)
                    for label in labels)
             or any(label["name"] == "go-worker-approved" for label in labels)
             or not isinstance(contract, dict)
-            or contract != {"path": "test/event-encounter-rotations.test.mjs",
-                            "instruction": RETIRED_563_INSTRUCTION}):
+            or contract != contract_expected):
         raise QueueError("Rotation task identity, contract or approval changed")
 
     iso = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
@@ -1012,18 +1032,18 @@ def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
             if not isinstance(pr, dict):
                 raise QueueError("Rotation PR history malformed")
             timestamp = pr.get("created_at")
-            number = pr.get("number")
+            pr_number = pr.get("number")
             if (not isinstance(timestamp, str) or not re.fullmatch(iso, timestamp)
-                    or type(number) is not int or number <= 0 or number in seen_prs
+                    or type(pr_number) is not int or pr_number <= 0 or pr_number in seen_prs
                     or (last_created is not None and timestamp > last_created)):
                 raise QueueError("Rotation PR history incomplete")
-            seen_prs.add(number)
+            seen_prs.add(pr_number)
             last_created = timestamp
             if timestamp < created:
                 pr_history_complete = True
                 break
-            if ("Worker: issue #563" in str(pr.get("title") or "")
-                    or "Source task: #563" in str(pr.get("body") or "")):
+            if ("Worker: issue #" + str(number) in str(pr.get("title") or "")
+                    or "Source task: #" + str(number) in str(pr.get("body") or "")):
                 raise QueueError("Rotation task may already have a worker PR")
             head = pr.get("head")
             if not isinstance(head, dict) or not isinstance(head.get("ref"), str):
@@ -1037,7 +1057,7 @@ def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
                 seen_paths = set()
                 for file_page in range(1, 11):
                     changed = fetch("https://api.github.com/repos/" + REPO +
-                                    "/pulls/" + str(number) +
+                                    "/pulls/" + str(pr_number) +
                                     "/files?per_page=100&page=" + str(file_page))
                     if not isinstance(changed, list) or len(changed) > 100:
                         raise QueueError("Worker PR file history unavailable")
@@ -1048,7 +1068,7 @@ def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
                         if filename in seen_paths:
                             raise QueueError("Worker PR file history repeated")
                         seen_paths.add(filename)
-                        if filename == "test/event-encounter-rotations.test.mjs":
+                        if filename in owned_paths:
                             raise QueueError("Potential rotation worker PR already exists")
                     if len(changed) < 100:
                         files_complete = True
@@ -1123,7 +1143,7 @@ def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
                 if not isinstance(filename, str) or filename in seen_paths:
                     raise QueueError("Worker branch changed files invalid")
                 seen_paths.add(filename)
-                if filename == "test/event-encounter-rotations.test.mjs":
+                if filename in owned_paths:
                     raise QueueError("Ambiguous existing rotation worker branch")
         if len(branches) < 100:
             branch_history_complete = True
@@ -1132,10 +1152,9 @@ def retire_failed_rotation_service_task(path=LEDGER, fetch=github_read):
         raise QueueError("Rotation branch pagination incomplete")
 
     # Only one immutable ledger entry changes; all prior results survive.
-    state["563"] = {"state": "retired", "attempts": 1,
-                    "reason": "failed-rotation-edit-service-no-retry"}
+    state[str(number)] = {"state": "retired", "attempts": 1, "reason": reason}
     save_ledger(state, path)
-    print("Rotation edit-service task #563 safely retired without retry or PR", flush=True)
+    print(message, flush=True)
     return True
 
 
@@ -1297,7 +1316,7 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task", "retire_max_anchor_task"):
         raise QueueError("Invalid queue mode")
     with LOCK.open("a+b") as lock:
         try:
@@ -1349,6 +1368,8 @@ def main():
             retire_failed_places_publish_task()
         elif mode == "retire_rotation_service_task":
             retire_failed_rotation_service_task()
+        elif mode == "retire_max_anchor_task":
+            retire_failed_max_anchor_task()
         else:
             once(scan=(mode == "scan"))
 

@@ -1333,6 +1333,52 @@ class WorkerQueueTests(unittest.TestCase):
                                "failure_stage": "publish", "pr": 800}, should_fail=True)
 
 
+    def test_exact_max_anchor_retirement_preserves_unrelated_tasks_and_never_retries(self):
+        task = {"issue": 594, **q.RETIRED_594_CONTRACT}
+        record = {"state": "needs-review", "attempts": 1, "failure_stage": "edit-source",
+                  "failure_category": "anchor", "task_sha256": q.task_fingerprint(task)}
+        item = {"number": 594, "state": "open", "labels": [], "user": {"login": "Wood468"},
+                "title": "[GO-WORKER] Controlled source/test pilot: match Max Battle names as whole words",
+                "created_at": "2026-11-12T03:53:53Z",
+                "body": "GO_WORKER_TASK_JSON:" + json.dumps(q.RETIRED_594_CONTRACT)}
+        cases = [(None, None, []),
+                 ({"labels": [{"name": "go-worker-approved"}]}, None, []),
+                 ({"user": {"login": "other"}}, None, []),
+                 ({"title": "different"}, None, []),
+                 ({"body": "GO_WORKER_TASK_JSON:{}"}, None, []),
+                 ({"created_at": "unknown"}, None, []),
+                 (None, {**record, "attempts": 2}, []),
+                 (None, {**record, "task_sha256": "0" * 64}, []),
+                 (None, {**record, "failure_stage": "publish"}, []),
+                 (None, {**record, "failure_category": "service"}, []),
+                 (None, {**record, "pr": 999}, []),
+                 (None, None, [{"number": 595, "created_at": "2026-11-12T04:00:00Z",
+                               "title": "Worker: issue #594 draft changes", "body": ""}]),
+                 (None, None, "unavailable")]
+        for index, (changed, altered, history) in enumerate(cases):
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as directory:
+                ledger = Path(directory) / "ledger.json"
+                initial = {"594": altered or record, "586": {"state": "submitted", "pr": 587},
+                           "563": {"state": "retired", "attempts": 1}}
+                q.save_ledger(initial, ledger)
+                def fetch(url):
+                    if url.endswith('/issues/594'): return {**item, **(changed or {})}
+                    if '/pulls?' in url: return history
+                    if '/branches?' in url: return []
+                    self.fail('Unexpected endpoint')
+                if index:
+                    with self.assertRaises(q.QueueError): q.retire_failed_max_anchor_task(ledger, fetch)
+                    self.assertEqual(q.read_ledger(ledger), initial)
+                else:
+                    self.assertTrue(q.retire_failed_max_anchor_task(ledger, fetch))
+                    after = q.read_ledger(ledger)
+                    self.assertEqual(after['586'], initial['586'])
+                    self.assertEqual(after['563'], initial['563'])
+                    self.assertEqual(after['594'], {'state': 'retired', 'attempts': 1,
+                                                  'reason': 'failed-max-source-anchor-no-retry'})
+                    self.assertFalse(q.approved_for_dispatch(task, after))
+                    with self.assertRaises(q.QueueError): q.retire_failed_max_anchor_task(ledger, fetch)
+
     def test_rotation_service_563_retirement_fails_closed_without_retry(self):
         item = issue(number=563, path="test/event-encounter-rotations.test.mjs")
         item["title"] = "[GO-WORKER] Unattended v1 regression: venue-local habitat DST boundaries"
