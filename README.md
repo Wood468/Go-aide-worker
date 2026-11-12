@@ -8,6 +8,12 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.32: exact queued patches and private syntax diagnosis
+
+Queued edits of existing text now always use bounded exact old/new replacements, including small sections and tests, instead of rewriting their entire content. Overlapping matches are ambiguous and rejected. This preserves untouched regex/string bytes without relying on model transcription. Manual small-file behavior is unchanged.
+
+A held version-4 `syntax-check` failure can be independently diagnosed and retired through the existing credential-free review action. It first verifies the exact changed paths, source hash/outside-section bytes, and deterministic cache files. Node parses both original and updated source/test via stdin with no credentials, without executing code. Only fixed role/category values are printed or retained; generated code, raw parser output and identifiers never enter logs. Baselines must parse successfully and at least one updated file must fail with a recognized SyntaxError. Infrastructure errors, scope drift and ambiguous histories remain blocked. Complete remote PR/branch audit and withdrawn approvals/operator review are still mandatory before one-way retirement; no retry or repair is performed.
+
 ## v0.5.31: recovery CLI scope
 
 The recovery CLI accepts the complete operator-reviewed source/test/cache scope. Queue Loop still validates test-only paths. An entry-point test proves both routes; reviewed-isolation function tests alone missed this distinction in v0.5.30. No ledger mutation happened in the rejected invocation.

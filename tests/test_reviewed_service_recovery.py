@@ -69,7 +69,7 @@ class ReviewedServiceRecovery(unittest.TestCase):
                 self.assertEqual(set(after), set(initial))
                 self.assertEqual(after['700']['state'], 'retired')
                 self.assertEqual(after['700']['task_sha256'], self.digest)
-                self.assertEqual(after['700']['failure_category'], (record or self.record)['failure_category'])
+                self.assertEqual(after['700']['failure_category'], (record or self.record).get('failure_category', 'syntax'))
                 self.assertFalse(q.approved_for_dispatch(self.task, after))
                 with self.assertRaises(q.QueueError):
                     q.isolate_reviewed_service_failure(self.ledger, fetch)
@@ -92,6 +92,23 @@ class ReviewedServiceRecovery(unittest.TestCase):
         self.env = {'WORKER_FAILURE_REVIEW': json.dumps(self.receipt),
                     'WORKER_FILE_ALLOWLIST': json.dumps(paths)}
         return paths
+
+    def test_reviewed_prepublication_syntax_failure_requires_diagnosis_and_full_audit(self):
+        self.source_fixture()
+        self.record = {k:v for k,v in self.record.items() if k != 'failure_category'}
+        self.record['failure_stage'] = 'syntax-check'
+        self.initial['700'] = self.record
+        result = {'source-baseline': 'pass', 'source-updated': 'pass',
+                  'test-baseline': 'pass', 'test-updated': 'duplicate-binding'}
+        with patch.object(q, 'diagnose_section_syntax', return_value=result) as diagnose:
+            self.run_case()
+            diagnose.assert_called_once()
+        with patch.object(q, 'diagnose_section_syntax', side_effect=q.QueueError('unclassified')):
+            self.run_case(failure=True)
+        with patch.object(q, 'diagnose_section_syntax', return_value=result):
+            self.audit_path = 'public/app.js'
+            self.run_case(branch=True, failure=True)
+            self.run_case(record={**self.record, 'failure_stage': 'publish'}, failure=True)
 
     def test_actual_recovery_cli_accepts_full_source_scope_but_loop_rejects_it(self):
         self.source_fixture()

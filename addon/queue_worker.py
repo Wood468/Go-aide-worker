@@ -1190,6 +1190,59 @@ REVIEW_LABEL = "go-worker-failure-reviewed"
 LEGACY_SERVICE_REVIEW = {599: '7fd9519525679cbeb75a381ecdb7cdec737607c247411bda9c31b512eacf68a3'}
 
 
+def diagnose_section_syntax(root, task, runner=None):
+    """Reproduce parsing with no credentials; return only finite categories."""
+    import publisher
+    import cache_contract
+    runner = runner or subprocess.run
+    try:
+        _head, files = publisher.safe_files(root, section_contract=task['section'])
+        cache_contract.verify(root, task['paths'][0], str(task['issue']))
+    except (publisher.PublishError, cache_contract.CacheContractError):
+        raise QueueError('Syntax review baseline or scope invalid') from None
+    if [path for path, _ in files] != sorted(task['paths']):
+        raise QueueError('Syntax review scope changed')
+    changed = dict(files)
+    outcomes = {}
+    for role, path in zip(('source', 'test'), task['paths'][:2]):
+        baseline = publisher.local_git(root, 'show', 'HEAD:' + path)
+        mode = 'module' if path.endswith('.mjs') else 'commonjs'
+        for kind, data in (('baseline', baseline), ('updated', changed[path])):
+            try:
+                result = runner(['node', '--input-type=' + mode, '--check'], input=data,
+                                cwd=root, env=child_env(), stdout=subprocess.DEVNULL,
+                                stderr=subprocess.PIPE, timeout=20, check=False)
+            except (subprocess.SubprocessError, OSError):
+                raise QueueError('Syntax diagnosis unavailable') from None
+            category = 'pass'
+            if result.returncode:
+                error = result.stderr
+                if not isinstance(error, bytes) or len(error) > 500_000:
+                    raise QueueError('Syntax diagnosis unavailable')
+                if b'SyntaxError: Identifier ' in error and b'has already been declared' in error:
+                    category = 'duplicate-binding'
+                elif b'SyntaxError: Unexpected end of input' in error:
+                    category = 'unexpected-eof'
+                elif b'SyntaxError: Invalid or unexpected token' in error:
+                    category = 'invalid-token'
+                elif b'SyntaxError: Unexpected ' in error:
+                    category = 'unexpected-token'
+                elif b'SyntaxError: Invalid regular expression' in error:
+                    category = 'invalid-regexp'
+                elif b'SyntaxError: missing ' in error:
+                    category = 'missing-delimiter'
+                elif b'SyntaxError:' in error:
+                    category = 'syntax-error'
+                else:
+                    raise QueueError('Syntax diagnosis unclassified')
+            outcomes[role + '-' + kind] = category
+            print('Reviewed syntax ' + role + ' ' + kind + ': ' + category, flush=True)
+    if (outcomes['source-baseline'] != 'pass' or outcomes['test-baseline'] != 'pass'
+            or outcomes['source-updated'] == outcomes['test-updated'] == 'pass'):
+        raise QueueError('Syntax failure cannot be attributed to this edit')
+    return outcomes
+
+
 def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
     """Reviewed prewrite failure isolation; never retry, edit or publish."""
     receipt = queue_scope.review_request(os.environ.get('WORKER_FAILURE_REVIEW'))
@@ -1197,26 +1250,32 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
     state = read_ledger(path)
     record = state.get(str(receipt['issue']))
     required = {'state', 'attempts', 'failure_stage', 'failure_category'}
+    source_syntax = (isinstance(record, dict) and set(record) == {'state', 'attempts', 'failure_stage', 'task_sha256'}
+                     and record.get('failure_stage') == 'syntax-check')
     source_format = (isinstance(record, dict) and record.get('failure_stage') == 'edit-source'
                      and record.get('failure_category') == 'format')
     service = (isinstance(record, dict) and record.get('failure_stage') == 'edit-single'
                and record.get('failure_category') in {'service', 'service-500', 'service-502', 'service-503', 'service-504'})
-    if (not isinstance(record, dict) or set(record) not in (required, required | {'task_sha256'})
+    if (not isinstance(record, dict) or (set(record) not in (required, required | {'task_sha256'}) and not source_syntax)
             or record.get('state') != 'needs-review' or type(record.get('attempts')) is not int
-            or record['attempts'] != 1 or not (source_format or service)
-            or ('task_sha256' not in record and (source_format or LEGACY_SERVICE_REVIEW.get(receipt['issue']) != receipt['task_sha256']))
+            or record['attempts'] != 1 or not (source_format or source_syntax or service)
+            or ('task_sha256' not in record and ((source_format or source_syntax) or LEGACY_SERVICE_REVIEW.get(receipt['issue']) != receipt['task_sha256']))
             or ('task_sha256' in record and record['task_sha256'] != receipt['task_sha256'])):
         raise QueueError('Failure not eligible for reviewed isolation')
     issue = fetch('https://api.github.com/repos/' + REPO + '/issues/' + str(receipt['issue']))
     task = parse_task(issue, require_approval=False)
     if not task or task_fingerprint(task) != receipt['task_sha256']:
         raise QueueError('Reviewed failure contract changed')
-    if source_format:
+    diagnostics = None
+    if source_format or source_syntax:
         if task.get('version') != 4 or task['paths'][0] != receipt['path'] or allowed != task['paths']:
             raise QueueError('Failure review scope mismatch')
         owned = set(task['paths'])
         contract = {k: v for k, v in task.items() if k != 'issue'}
         reason = 'operator-reviewed-source-format-no-retry'
+        if source_syntax:
+            diagnostics = diagnose_section_syntax(CHECKOUT, task)
+            reason = 'operator-reviewed-syntax-no-retry'
     else:
         if 'version' in task or task.get('path') != receipt['path'] or allowed != [task['path']]:
             raise QueueError('Failure review scope mismatch')
@@ -1228,7 +1287,8 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
         'Reviewed prewrite task #' + str(receipt['issue']) + ' isolated without retry or PR',
         required_review_label=REVIEW_LABEL,
         retired_details={'task_sha256': receipt['task_sha256'], 'failure_stage': record['failure_stage'],
-                         'failure_category': record['failure_category']})
+                         'failure_category': record.get('failure_category', 'syntax'),
+                         **({'review_syntax': diagnostics} if diagnostics else {})})
 
 
 def perform(task, state, fetch=github_read, runner=child_run):

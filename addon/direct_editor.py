@@ -44,7 +44,8 @@ def apply_replacements(original, replacements):
                 or len(old) > MAX_REPLACEMENT_CHARS
                 or len(new) > MAX_REPLACEMENT_CHARS):
             raise DirectEditError("Large-file replacement exceeds scope")
-        if original.count(old) != 1:
+        first = original.find(old)
+        if first < 0 or original.find(old, first + 1) >= 0:
             raise DirectEditError("Large-file replacement anchor is not unique")
         pos = original.index(old)
         ranges.append((pos, pos + len(old), new))
@@ -68,7 +69,7 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
     size = len(original.encode("utf-8"))
     if size > MAX_FILE_BYTES:
         raise DirectEditError("Selected file is too large")
-    large = size > MAX_INPUT
+    large = size > MAX_INPUT or (bool(size) and os.environ.get("GO_WORKER_QUEUE_EDIT") == "1")
     instruction = (
         'Return only a JSON object with keys "path" and "replacements". '
         '"replacements" must be an array of 1 to 3 objects with exactly the '
