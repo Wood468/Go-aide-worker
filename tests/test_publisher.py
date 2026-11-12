@@ -14,6 +14,7 @@ P = Path(__file__).resolve().parents[1] / "addon/publisher.py"
 spec = importlib.util.spec_from_file_location("publisher", P)
 publisher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publisher)
+import queue_worker
 
 
 class DraftPublisher(unittest.TestCase):
@@ -274,7 +275,8 @@ class DraftPublisher(unittest.TestCase):
                 self.fail("Unexpected GitHub API operation")
             with patch.dict(os.environ,{
                     "WORKER_ISSUE_NUMBER":"600",
-                    "WORKER_APPROVED_PATHS":json.dumps(pair if paths is None else paths)}):
+                    "WORKER_APPROVED_PATHS":json.dumps(pair if paths is None else paths),
+                    "WORKER_TASK_SHA256":queue_worker.task_fingerprint(queue_worker.parse_task(approved()))}):
                 try:
                     result=publisher.publish(self.root,"dummy-token",request,"abcdef123456")
                 except publisher.PublishError:
@@ -286,6 +288,11 @@ class DraftPublisher(unittest.TestCase):
                 self.assertTrue(operations[-1][2]["draft"])
                 return True
         self.assertTrue(perform())
+        broken=approved()
+        payload=json.loads(broken["body"].split("GO_WORKER_TASK_JSON:")[1])
+        payload["instruction"]="Change the same paths for a completely different unapproved purpose."
+        broken["body"]="GO_WORKER_TASK_JSON:"+json.dumps(payload)
+        self.assertFalse(perform(changed=broken))
         broken=approved();broken["labels"]=[]
         self.assertFalse(perform(changed=broken))
         broken=approved();broken["body"]="GO_WORKER_TASK_JSON:{}"
@@ -300,6 +307,42 @@ class DraftPublisher(unittest.TestCase):
         # Missing one changed file must also fail closed.
         self.git("restore",pair[1])
         self.assertFalse(perform())
+
+    def test_multifile_contract_must_remain_approved_through_pr_creation(self):
+        pair = ["public/today.js", "test/today-logic.test.mjs"]
+        task = {"issue": 600, "version": 2, "paths": pair,
+                "instruction": "Preserve unrelated code and add a bounded regression."}
+        approved = {"number": 600, "state": "open", "title": "[GO-WORKER] Contract",
+                    "user": {"login": "Wood468"},
+                    "labels": [{"name": "go-worker-approved"}],
+                    "body": "GO_WORKER_TASK_JSON:" + json.dumps({k: v for k, v in task.items() if k != "issue"})}
+        for fingerprint in (None, "invalid", queue_worker.task_fingerprint(task)):
+            with self.subTest(fingerprint=fingerprint):
+                calls = []
+                reads = 0
+                def request(token, method, endpoint, payload=None):
+                    nonlocal reads
+                    calls.append((method, endpoint))
+                    if endpoint == "/issues/600":
+                        reads += 1
+                        return approved if reads == 1 else {**approved, "labels": []}
+                    if endpoint == "/git/ref/heads/main": return {"object": {"sha": self.sha}}
+                    if endpoint == "/git/commits/" + self.sha: return {"tree": {"sha": "tree"}}
+                    if endpoint == "/git/refs": return {}
+                    if endpoint == "/pulls": self.fail("Changed contract must never publish")
+                    return {"sha": "fixture-object"}
+                env = {"WORKER_ISSUE_NUMBER": "600", "WORKER_APPROVED_PATHS": json.dumps(pair)}
+                if fingerprint is not None: env["WORKER_TASK_SHA256"] = fingerprint
+                with (patch.dict(os.environ, env, clear=True),
+                      patch.object(publisher, "safe_files", return_value=(self.sha, [(p, b"new") for p in sorted(pair)])),
+                      patch.object(publisher, "local_git", return_value=b"tracked")):
+                    with self.assertRaises(publisher.PublishError):
+                        publisher.publish(self.root, "dummy", request)
+                self.assertNotIn(("POST", "/pulls"), calls)
+                if fingerprint != queue_worker.task_fingerprint(task):
+                    self.assertFalse(any(method == "POST" for method, _ in calls))
+                else:
+                    self.assertEqual(reads, 2)
 
     def test_publish_diagnostics_are_fixed_and_never_echo_secrets(self):
         secret = "ghp_example_secret_should_never_be_logged"

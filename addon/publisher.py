@@ -203,7 +203,8 @@ def publish(workspace, token, request=api, branch_id=None):
         task = queue_worker.parse_task(source)
         if (not task or task.get("version") != (3 if is_cache else 2)
                 or task["issue"] != int(issue_number)
-                or task["paths"] != approved):
+                or task["paths"] != approved
+                or queue_worker.task_fingerprint(task) != os.environ.get("WORKER_TASK_SHA256")):
             raise PublishError("Approved GitHub task was revoked or changed")
     ref = request(token, "GET", "/git/ref/heads/main")
     base_sha = ref["object"]["sha"]
@@ -231,6 +232,12 @@ def publish(workspace, token, request=api, branch_id=None):
     # A prior ambiguous attempt with this task/base leaves this same branch.
     # The second creation must fail closed (HTTP 422): never spawn a second PR.
     request(token, "POST", "/git/refs", {"ref": "refs/heads/" + branch, "sha": commit["sha"]})
+    if approved_raw is not None:
+        # Recheck after object/ref creation too: a changed approval must not
+        # become a published draft. Ambiguous leftovers require review.
+        current = queue_worker.parse_task(request(token, "GET", "/issues/" + issue_number))
+        if not current or queue_worker.task_fingerprint(current) != os.environ.get("WORKER_TASK_SHA256"):
+            raise PublishError("Approved GitHub task was revoked or changed")
     pr = request(token, "POST", "/pulls", {
         "title": ("Worker: issue #" + source_issue + " draft changes" if source_issue else
                   "Worker: proposed isolated changes (review required)"),

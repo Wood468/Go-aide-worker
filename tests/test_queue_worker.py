@@ -660,6 +660,7 @@ class WorkerQueueTests(unittest.TestCase):
                             self.assertEqual([p for p in touched],pair)
                             self.assertEqual(len(published),1)
                             self.assertEqual(json.loads(published[0]["WORKER_APPROVED_PATHS"]),pair)
+                            self.assertEqual(published[0]["WORKER_TASK_SHA256"], q.task_fingerprint(parsed))
                             self.assertEqual(q.read_ledger(ledger)["600"]["state"],"submitted")
                         else:
                             with self.assertRaises(q.QueueError):
