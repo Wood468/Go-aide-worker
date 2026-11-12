@@ -160,7 +160,11 @@ def parse_task(issue, require_approval=True):
     body = issue.get("body")
     if not isinstance(body, str) or len(body) > 5000:
         return None
-    parts = TASK_RE.findall(body)
+    # Section requests repeat the immutable instruction inside the envelope.
+    # Retain the 5 KB issue cap, and require exactly one marker of any size.
+    if sum(line.startswith('GO_WORKER_TASK_JSON:') for line in body.splitlines()) != 1:
+        return None
+    parts = re.findall(r'^GO_WORKER_TASK_JSON:(\{[^\n]{1,4500}\})$', body, re.MULTILINE)
     if len(parts) != 1:
         return None
     try:
@@ -177,6 +181,22 @@ def parse_task(issue, require_approval=True):
         if not isinstance(path, str) or not PATH_RE.fullmatch(path):
             return None
         return {"issue": issue["number"], "path": path, "instruction": instruction.strip()}
+    if set(obj) == {'version', 'paths', 'instruction', 'section'} and type(obj['version']) is int and obj['version'] == 4:
+        paths = obj['paths']
+        if (not isinstance(paths, list) or len(paths) not in (4, 5)
+                or not all(isinstance(p, str) for p in paths)
+                or tuple(paths[:2]) not in SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS
+                or paths[2:] != (['public/app.js', 'public/index.html', 'public/sw.js'] if paths[0] == 'public/dash.js' else ['public/index.html', 'public/sw.js'])):
+            return None
+        import section_editor
+        try:
+            section_editor.task_contract(obj['section'], paths[0])
+        except section_editor.SectionEditError:
+            return None
+        if obj['section']['instruction'] != instruction.strip():
+            return None
+        return {'issue': issue['number'], 'version': 4, 'paths': list(paths),
+                'instruction': instruction.strip(), 'section': dict(obj['section'])}
     if set(obj) == {"version", "paths", "instruction"} and type(obj["version"]) is int:
         version, paths = obj["version"], obj["paths"]
         if (not isinstance(paths, list) or not all(isinstance(p, str) for p in paths)
@@ -1221,12 +1241,12 @@ def perform(task, state, fetch=github_read, runner=child_run):
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
         stage = "target-validation"
         version = task.get("version")
-        multi = version in (2, 3)
+        multi = version in (2, 3, 4)
         paths = task["paths"] if multi else [task["path"]]
-        edit_paths = paths[:2] if version == 3 else paths
-        if multi and tuple(edit_paths) not in SOURCE_TEST_PAIRS:
+        edit_paths = paths[:2] if version in (3, 4) else paths
+        if multi and tuple(edit_paths) not in (SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS if version == 4 else SOURCE_TEST_PAIRS):
             raise QueueError("Disallowed source/test contract")
-        if version == 3 and paths[2:] != ["public/index.html", "public/sw.js"]:
+        if version in (3, 4) and paths[2:] != (["public/app.js", "public/index.html", "public/sw.js"] if version == 4 and paths[0] == "public/dash.js" else ["public/index.html", "public/sw.js"]):
             raise QueueError("Disallowed cache update paths")
         for relative in paths:
             target = CHECKOUT / relative
@@ -1272,8 +1292,10 @@ def perform(task, state, fetch=github_read, runner=child_run):
             stage = "edit-source" if multi and i == 0 else "edit-test" if multi else "edit-single"
             runner([sys.executable, "/opt/worker/direct_editor.py"],
                    child_env(GEMINI_API_KEY=gemini, EDIT_FILES=relative,
-                             GO_WORKER_QUEUE_EDIT="1"))
-        if version == 3:
+                             GO_WORKER_QUEUE_EDIT="1",
+                             **({"WORKER_SECTION_CONTRACT": json.dumps(task["section"])}
+                                if version == 4 and i == 0 else {})))
+        if version in (3, 4):
             stage = "cache-sync"
             # The model may never edit HTML/SW; apply exactly two deterministic
             # version-token substitutions against pristine tracked baselines.
@@ -1286,7 +1308,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
                 runner(["node", "--check", str(CHECKOUT / relative)], child_env())
         stage = "diff-validation"
         import publisher
-        _head, changed = publisher.safe_files(CHECKOUT)
+        _head, changed = publisher.safe_files(CHECKOUT, **({"section_contract": task["section"]} if version == 4 else {}))
         if [name for name, _data in changed] != sorted(paths):
             raise QueueError("Missing or extra modified task paths")
         stage = "approval-postcheck"
@@ -1300,6 +1322,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
                                     WORKER_ISSUE_NUMBER=key,
                                     WORKER_FILE_ALLOWLIST=json.dumps(global_scope),
                                     WORKER_DISPATCH_SCOPE=json.dumps(paths))
+        if version == 4:
+            publication_env["WORKER_SECTION_CONTRACT"] = json.dumps(task["section"])
         if multi:
             publication_env["WORKER_APPROVED_PATHS"] = json.dumps(paths)
             publication_env["WORKER_TASK_SHA256"] = contract_sha

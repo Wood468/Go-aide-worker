@@ -47,8 +47,37 @@ def expected(root, source, issue):
     if (not isinstance(source, str) or not re.fullmatch(r"public/[A-Za-z0-9-]+\.js", source)
             or not isinstance(issue, str) or not re.fullmatch(r"[1-9][0-9]{0,9}", issue)):
         raise CacheContractError("Invalid cache task identity")
+    if source == 'public/dash.js':
+        # Dashboard is dynamically loaded: keep its preload, loader, app tag
+        # and both SW URLs in exact sync; no model controls cache files.
+        index, sw, app = (git_base(root, rel) for rel in (INDEX, SW, 'public/app.js'))
+        pattern = re.compile(rb'(<link rel="preload" href="/dash.js\?v=)(' + VERSION_PATTERN + rb')(" as="script">)')
+        matches = list(pattern.finditer(index))
+        if len(matches) != 1:
+            raise CacheContractError('Expected one dashboard preload')
+        old = matches[0].group(2)
+        version = REF_VERSION.fullmatch(old)
+        if not version:
+            raise CacheContractError('Unexpected dashboard cache version')
+        new = version.group(1) + b'-w' + issue.encode('ascii')
+        old_ref, new_ref = b'/dash.js?v=' + old, b'/dash.js?v=' + new
+        loader = b"ds.src='" + old_ref + b"'"
+        if app.count(loader) != 1 or sw.count(b"'" + old_ref + b"'") != 1 or old == new:
+            raise CacheContractError('Dashboard loader/cache mismatch')
+        app_next = app.replace(loader, b"ds.src='" + new_ref + b"'", 1)
+        # Reuse the existing exact script-tag/SW/app revision transformation.
+        updates = expected_simple(index, sw, 'public/app.js', issue)
+        updates[INDEX] = pattern.sub(lambda m: m.group(1) + new + m.group(3), updates[INDEX], count=1)
+        updates[SW] = updates[SW].replace(b"'" + old_ref + b"'", b"'" + new_ref + b"'", 1)
+        updates['public/app.js'] = app_next
+        if any(len(raw) > MAX_CACHE_BYTES for raw in updates.values()):
+            raise CacheContractError('Oversized dashboard cache output')
+        return updates
+    return expected_simple(git_base(root, INDEX), git_base(root, SW), source, issue)
+
+
+def expected_simple(original_index, original_sw, source, issue):
     name = source.removeprefix("public/").encode("ascii")
-    original_index, original_sw = git_base(root, INDEX), git_base(root, SW)
     # Strictly one versioned script tag (not an arbitrary match elsewhere).
     pattern = re.compile(rb'(<script src="/' + re.escape(name) + rb'\?v=)(' + VERSION_PATTERN + rb')("></script>)')
     refs = list(pattern.finditer(original_index))

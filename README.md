@@ -38,6 +38,16 @@ Controlled source/test task #594 failed at edit-source/anchor on installed v0.5.
 
 The credential-free `queue_retire_max_anchor_task` can retire only this exact one-attempt failure, with its original complete contract and stored SHA-256, after deapproval and complete bounded PR/worker-branch checks. It never edits, publishes, retries or clears another record. It shares the existing fully tested #563 audit; that historical action retains its fixed contract and behavior. Install idle/off, run retirement with queue opt-in only, verify the ledger, return idle/off. Any subsequent source pilot must be a NEW issue and include the deterministic cache contract required by current app CI. No source auto-merge is permitted.
 
+## Bounded-section single-run tasks (v0.5.29; issue #30)
+
+Queue Once accepts an owner-approved version-4 contract with exactly `version`, `paths`, `instruction`, and `section`. Paths are an existing source/test pair followed by `public/index.html` and `public/sw.js`. The dashboard pair additionally requires `public/app.js` before those cache files, because app.js dynamically loads dash.js; the worker deterministically synchronizes its loader, the dashboard preload, the app script tag, both SW asset references and the numeric shell revision. The additional pair `public/dash.js` + `test/event-detail-source-confidence.test.mjs` is section-only. The section object binds exactly version 1, path, instruction (equal to the outer instruction), sha256, start and end anchors. The full contract fingerprint is retained and rechecked before publication and after branch creation.
+
+Only the named source may exceed 100 KB, up to 250 KB. Gemini receives at most 40 KB of selected context. The independent publisher reads the original tracked HEAD bytes, verifies the approved hash, and proves every byte outside the section unchanged. Other files keep the 100 KB cap; section-task aggregate content is capped at 400 KB. Test edits and deterministic cache updates are required. Node parses source/test syntax without executing generated code in Home Assistant.
+
+Queue Loop rejects all versioned source tasks. Section editing cannot be requested by manual Direct Edit options. Editing and publishing require the existing explicit opt-ins and file allowlist. The coding worker creates a draft PR only; production-source auto-merge remains disabled. Failed or ambiguous publication requires review, never automatic replay.
+
+Activation evidence and the controlled live acceptance result are tracked in PR #51 and issue #30. A repository merge alone is not an installed or accepted release.
+
 ## v0.5.23: immutable source-task publication contract
 
 Source/test publishers now require a SHA-256 identity of the complete parsed task captured before editing, including its instruction. The isolated publisher compares the currently approved task to that identity before any GitHub write and again before creating the draft PR. Same-path instruction changes, missing fingerprints and revoked approval fail closed. A late revocation can leave an unpublished worker branch; the existing no-retry ledger requires review. No broader file grants or source auto-merge are introduced.
