@@ -23,7 +23,7 @@ class SectionPipeline(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.paths = ['public/dash.js', 'test/event-detail-source-confidence.test.mjs',
-                      'public/index.html', 'public/sw.js']
+                      'public/app.js', 'public/index.html', 'public/sw.js']
         self.section = b'function approvedSection() { return 1; } // approved end'
         self.original = b'// unrelated\n' * 15000 + self.section + b'\n// retained tail\n'
         self.contract = {'version': 1, 'path': self.paths[0],
@@ -197,3 +197,47 @@ class SectionPipeline(unittest.TestCase):
             self.assertEqual(edits, self.paths[:2])
             self.assertEqual(len(publications), 1)
             self.assertEqual(q.read_ledger(ledger)['701']['state'], 'submitted')
+
+
+class DashboardCacheContract(unittest.TestCase):
+    def setUp(self):
+        self.base = {
+            'public/index.html': b'<link rel="preload" href="/dash.js?v=20261118b" as="script">\n<script src="/app.js?v=20261118c"></script>\n',
+            'public/app.js': b"// unchanged before\nds.src='/dash.js?v=20261118b';\n// unchanged after\n",
+            'public/sw.js': b"const C='gofn-shell-v10'; const A=['/app.js?v=20261118c','/dash.js?v=20261118b'];\n"}
+
+    def expected(self, issue='701'):
+        import cache_contract
+        with patch.object(cache_contract, 'git_base', side_effect=lambda root, path: self.base[path]):
+            return cache_contract.expected(None, 'public/dash.js', issue)
+
+    def test_dashboard_preload_loader_and_two_cached_assets_stay_synced(self):
+        updated = self.expected()
+        self.assertEqual(set(updated), set(self.base))
+        for path in updated:
+            self.assertIn(b'/dash.js?v=20261118b-w701', updated[path])
+        self.assertEqual(updated['public/app.js'], self.base['public/app.js'].replace(
+            b'/dash.js?v=20261118b', b'/dash.js?v=20261118b-w701'))
+        self.assertIn(b'/app.js?v=20261118c-w701', updated['public/index.html'])
+        self.assertIn(b'/app.js?v=20261118c-w701', updated['public/sw.js'])
+        self.assertIn(b'gofn-shell-v11', updated['public/sw.js'])
+        self.base = updated
+        repeat = self.expected('702')
+        for raw in repeat.values():
+            self.assertNotIn(b'-w701', raw)
+            self.assertIn(b'/dash.js?v=20261118b-w702', raw)
+        self.assertIn(b'gofn-shell-v12', repeat['public/sw.js'])
+
+    def test_ambiguous_or_mismatched_dashboard_cache_layout_fails_closed(self):
+        import cache_contract
+        original = dict(self.base)
+        for path, raw in [
+            ('public/index.html', original['public/index.html'] * 2),
+            ('public/app.js', original['public/app.js'] * 2),
+            ('public/app.js', original['public/app.js'].replace(b'20261118b', b'20261118a')),
+            ('public/sw.js', original['public/sw.js'].replace(b'20261118b', b'20261118a')),
+            ('public/sw.js', original['public/sw.js'] + b"'/dash.js?v=20261118b'")]:
+            with self.subTest(path=path):
+                self.base = {**original, path: raw}
+                with self.assertRaises(cache_contract.CacheContractError):
+                    self.expected()

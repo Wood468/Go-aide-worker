@@ -223,6 +223,9 @@ def publish(workspace, token, request=api, branch_id=None):
         is_cache = (len(approved) == 4
                     and tuple(approved[:2]) in (queue_worker.SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS if section else queue_worker.SOURCE_TEST_PAIRS)
                     and approved[2:] == ["public/index.html", "public/sw.js"])
+        if section and section['path'] == 'public/dash.js':
+            is_cache = (approved == ['public/dash.js', 'test/event-detail-source-confidence.test.mjs',
+                                      'public/app.js', 'public/index.html', 'public/sw.js'])
         if not (is_pair or is_cache) or [path for path, _ in files] != sorted(approved):
             raise PublishError("Edited files differ from approved task scope")
         if is_cache:

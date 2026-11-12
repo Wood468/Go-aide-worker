@@ -183,10 +183,10 @@ def parse_task(issue, require_approval=True):
         return {"issue": issue["number"], "path": path, "instruction": instruction.strip()}
     if set(obj) == {'version', 'paths', 'instruction', 'section'} and type(obj['version']) is int and obj['version'] == 4:
         paths = obj['paths']
-        if (not isinstance(paths, list) or len(paths) != 4
+        if (not isinstance(paths, list) or len(paths) not in (4, 5)
                 or not all(isinstance(p, str) for p in paths)
                 or tuple(paths[:2]) not in SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS
-                or paths[2:] != ['public/index.html', 'public/sw.js']):
+                or paths[2:] != (['public/app.js', 'public/index.html', 'public/sw.js'] if paths[0] == 'public/dash.js' else ['public/index.html', 'public/sw.js'])):
             return None
         import section_editor
         try:
@@ -1246,7 +1246,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
         edit_paths = paths[:2] if version in (3, 4) else paths
         if multi and tuple(edit_paths) not in (SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS if version == 4 else SOURCE_TEST_PAIRS):
             raise QueueError("Disallowed source/test contract")
-        if version in (3, 4) and paths[2:] != ["public/index.html", "public/sw.js"]:
+        if version in (3, 4) and paths[2:] != (["public/app.js", "public/index.html", "public/sw.js"] if version == 4 and paths[0] == "public/dash.js" else ["public/index.html", "public/sw.js"]):
             raise QueueError("Disallowed cache update paths")
         for relative in paths:
             target = CHECKOUT / relative
