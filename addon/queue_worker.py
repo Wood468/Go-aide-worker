@@ -1424,17 +1424,19 @@ def perform(task, state, fetch=github_read, runner=child_run):
 
 
 def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
-         unattended=False, allowlist=None):
+         unattended=False, allowlist=None, section_only=False):
+    if section_only and (not unattended or allowlist is None):
+        raise queue_scope.ScopeError('Large-file queue requires explicit unattended scope')
     if allowlist is not None:
-        allowlist = queue_scope.validate(allowlist, unattended=unattended)
+        allowlist = queue_scope.validate(allowlist, unattended=unattended, section_only=section_only)
     tasks = candidates(fetch)
-    if unattended:
+    if unattended and not section_only:
         # Continuous background execution is limited to the previously proven
         # legacy single-file docs / existing flat test contract. Version-two
         # and version-three source+test jobs require an explicit manual pilot.
         tasks = [task for task in tasks if "version" not in task]
     if allowlist is not None:
-        tasks = [t for t in tasks if queue_scope.permits(t, allowlist, unattended)]
+        tasks = [t for t in tasks if queue_scope.permits(t, allowlist, unattended, section_only)]
     state = read_ledger(ledger_path)
     if scan:
         waiting = sum(approved_for_dispatch(t, state) for t in tasks)
@@ -1463,18 +1465,23 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task", "retire_max_anchor_task", "isolate_reviewed_service_failure"):
+    if mode not in ("scan", "once", "loop", "section_loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task", "retire_max_anchor_task", "isolate_reviewed_service_failure"):
         raise QueueError("Invalid queue mode")
     allowlist = None
-    if mode in {"once", "loop", "isolate_reviewed_service_failure"}:
-        allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=(mode == "loop"))
+    if mode in {"once", "loop", "section_loop", "isolate_reviewed_service_failure"}:
+        allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"),
+                                     unattended=(mode in {"loop", "section_loop"}),
+                                     section_only=(mode == "section_loop"))
     with LOCK.open("a+b") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise QueueError("Another queue worker holds the lock") from None
-        if mode == "loop":
-            print("Approved queue active: explicit test-file allowlist only; one draft PR at a time", flush=True)
+        if mode in {"loop", "section_loop"}:
+            section_only = mode == "section_loop"
+            print("Approved large-file queue active: one bounded section scope; one draft PR at a time"
+                  if section_only else
+                  "Approved queue active: explicit test-file allowlist only; one draft PR at a time", flush=True)
             shutdown = threading.Event()
             previous_handler = signal.getsignal(signal.SIGTERM)
             def request_shutdown(_signum, _frame):
@@ -1485,7 +1492,7 @@ def main():
             try:
                 while not shutdown.is_set():
                     try:
-                        once(unattended=True, allowlist=allowlist)
+                        once(unattended=True, allowlist=allowlist, section_only=section_only)
                     except (QueueError, OSError, ValueError):
                         print("Queue iteration failed; task held for review", flush=True)
                     shutdown.wait(600)

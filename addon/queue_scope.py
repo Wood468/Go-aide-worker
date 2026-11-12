@@ -12,17 +12,26 @@ SOURCE_TEST_PAIRS = {
 }
 SECTION_SOURCE_TEST_PAIRS = {('public/dash.js', 'test/event-detail-source-confidence.test.mjs')}
 SOURCE_PATHS = {pair[0] for pair in SOURCE_TEST_PAIRS | SECTION_SOURCE_TEST_PAIRS} | {'public/index.html', 'public/sw.js'}
+SECTION_SCOPES = {
+    pair + (('public/app.js', 'public/index.html', 'public/sw.js')
+            if pair[0] == 'public/dash.js' else ('public/index.html', 'public/sw.js'))
+    for pair in SOURCE_TEST_PAIRS | SECTION_SOURCE_TEST_PAIRS
+}
 
 
 class ScopeError(ValueError):
     pass
 
 
-def validate(paths, unattended=False):
+def validate(paths, unattended=False, section_only=False):
     if (not isinstance(paths, list) or not 1 <= len(paths) <= 5
             or not all(isinstance(p, str) and len(p) <= 180 for p in paths)
             or len(set(paths)) != len(paths)):
         raise ScopeError('Invalid queue file allowlist')
+    if section_only:
+        if tuple(paths) not in SECTION_SCOPES:
+            raise ScopeError('Large-file queue requires one complete source/test/cache scope')
+        return list(paths)
     for path in paths:
         if any(term in path.lower() for term in ("token", "password", "secret", "credential", "private_key")):
             raise ScopeError("Disallowed queue allowlist path")
@@ -33,21 +42,24 @@ def validate(paths, unattended=False):
     return list(paths)
 
 
-def parse(raw, unattended=False):
+def parse(raw, unattended=False, section_only=False):
     if not isinstance(raw, str) or len(raw) > 1200:
         raise ScopeError('Missing queue file allowlist')
     try:
         paths = json.loads(raw)
     except ValueError:
         raise ScopeError('Invalid queue file allowlist') from None
-    return validate(paths, unattended)
+    return validate(paths, unattended, section_only)
 
 
 def paths_of(task):
     return list(task['paths']) if 'paths' in task else [task['path']]
 
 
-def permits(task, paths, unattended=False):
+def permits(task, paths, unattended=False, section_only=False):
+    if section_only:
+        return (type(task.get('version')) is int and task['version'] == 4
+                and tuple(paths) in SECTION_SCOPES and paths_of(task) == paths)
     return (not unattended or 'version' not in task) and set(paths_of(task)).issubset(paths)
 
 

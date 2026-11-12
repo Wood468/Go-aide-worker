@@ -15,7 +15,7 @@ OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"}
+ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_large_file_loop", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -51,11 +51,12 @@ def read_options(path=OPTIONS):
                 or any(x.startswith(".") or x in {"", ".", ".."} for x in path.split("/"))
                 or any("token" in x.lower() or "secret" in x.lower() for x in path.split("/"))):
             raise ConfigurationError("Unsafe edit file path")
-    if action not in {"edit", "direct_edit", "queue_once", "queue_loop", "queue_isolate_reviewed_failure"} and selected:
+    if action not in {"edit", "direct_edit", "queue_once", "queue_loop", "queue_large_file_loop", "queue_isolate_reviewed_failure"} and selected:
         raise ConfigurationError("File selection is only available for edit jobs")
-    if action in {"queue_once", "queue_loop"}:
+    if action in {"queue_once", "queue_loop", "queue_large_file_loop"}:
         try:
-            queue_scope.validate(selected, unattended=(action == "queue_loop"))
+            queue_scope.validate(selected, unattended=(action in {"queue_loop", "queue_large_file_loop"}),
+                                 section_only=(action == "queue_large_file_loop"))
         except queue_scope.ScopeError:
             raise ConfigurationError("Queue requires an explicit safe file allowlist") from None
     if action == "queue_isolate_reviewed_failure":
@@ -75,7 +76,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Merged pilot acknowledgement requires editing and publishing disabled")
     if action in {"queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"} and not queue_enabled:
         raise ConfigurationError("Pilot recovery requires explicit queue opt-in")
-    if action in {"queue_once", "queue_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
+    if action in {"queue_once", "queue_loop", "queue_large_file_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
         raise ConfigurationError("Queue requires all three opt-ins and both credentials")
     if action == "probe" and not api_key.strip():
         raise ConfigurationError("Probe requires Gemini key")
@@ -83,7 +84,7 @@ def read_options(path=OPTIONS):
         raise ConfigurationError("Edit requires enabled mode, prompt and Gemini key")
     if action in {"publish", "publish_test"} and (not publish_enabled or not github_token.strip()):
         raise ConfigurationError("Publishing requires explicit opt-in and GitHub token")
-    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe", "queue_scan", "queue_once", "queue_loop", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and prompt.strip():
+    if action in {"idle", "prepare", "refresh", "inspect", "test", "verify", "publish", "publish_test", "probe", "queue_scan", "queue_once", "queue_loop", "queue_large_file_loop", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and prompt.strip():
         raise ConfigurationError("Only edit jobs accept a prompt")
     return action, prompt, enabled, api_key, publish_enabled, github_token, ",".join(selected)
 
@@ -160,7 +161,7 @@ def main():
         environment["EDIT_FILES"] = edit_files
     if action == "probe":
         environment["GEMINI_API_KEY"] = api_key
-    if action in {"queue_once", "queue_loop"}:
+    if action in {"queue_once", "queue_loop", "queue_large_file_loop"}:
         environment["GEMINI_API_KEY"] = api_key
         environment["GITHUB_TOKEN"] = github_token
         environment["ENABLE_QUEUE"] = "true"

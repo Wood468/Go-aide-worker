@@ -1638,9 +1638,10 @@ class WorkerQueueTests(unittest.TestCase):
             def install(signum, callback):
                 self.assertEqual(signum, signal.SIGTERM)
                 handler.append(callback)
-            def once(*, unattended, allowlist):
+            def once(*, unattended, allowlist, section_only):
                 self.assertEqual(allowlist, ["test/event-moves.test.mjs"])
                 self.assertTrue(unattended)
+                self.assertFalse(section_only)
                 seen.append(("once",))
                 return 0
             with (patch.object(q, "LOCK", Path(folder) / ".queue.lock"),
