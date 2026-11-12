@@ -35,6 +35,18 @@ class SectionEditing(unittest.TestCase):
         self.assertEqual(updated, self.prefix + self.section.replace(b'caf', b'updated caf') + self.suffix)
         self.assertTrue(editor.verify(self.original, updated, self.contract))
 
+    def test_overlapping_anchor_matches_never_call_model(self):
+        for key in ('start', 'end'):
+            with self.subTest(anchor=key):
+                original = b'a' * 13 + b'\nselected content\n' + b'z' * 13
+                contract = {'sha256': hashlib.sha256(original).hexdigest(),
+                            'start': 'a' * 13, 'end': 'z' * 13}
+                contract[key] = ('a' if key == 'start' else 'z') * 12
+                with self.assertRaises(editor.SectionEditError):
+                    editor.propose('fixture', 'bounded task', 'public/dash.js',
+                                   original, contract,
+                                   lambda *args: self.fail('Ambiguous context reached model'))
+
     def test_stale_or_malformed_contract_never_calls_model(self):
         for contract in ({}, {**self.contract, 'sha256': '0' * 64},
                          {**self.contract, 'sha256': True},

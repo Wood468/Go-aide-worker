@@ -43,7 +43,9 @@ def locate(original, contract):
             anchor = text.encode('utf-8')
         except UnicodeError:
             raise SectionEditError('Invalid section anchor') from None
-        if original.count(anchor) != 1:
+        # bytes.count skips overlapping matches; every possible start must be unique.
+        first = original.find(anchor)
+        if first < 0 or original.find(anchor, first + 1) >= 0:
             raise SectionEditError('Section anchor missing or ambiguous')
         anchors.append(anchor)
     start = original.index(anchors[0])
