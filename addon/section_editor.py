@@ -50,6 +50,8 @@ def locate(original, contract):
     end = end_start + len(anchors[1])
     if end_start < start + len(anchors[0]) or end - start > MAX_SECTION_BYTES:
         raise SectionEditError('Invalid section bounds')
+    if any(marker in original[start:end] for marker in SECRET_MARKERS):
+        raise SectionEditError('Unsafe section context')
     return start, end
 
 

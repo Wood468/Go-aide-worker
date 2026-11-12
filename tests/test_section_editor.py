@@ -67,6 +67,13 @@ class SectionEditing(unittest.TestCase):
         with self.assertRaises(editor.SectionEditError):
             editor.locate(oversized, self.contract_for(oversized))
 
+    def test_selected_secret_context_is_never_sent_to_model(self):
+        for marker in editor.SECRET_MARKERS:
+            original = self.original.replace(b'caf', marker + b'caf')
+            with self.assertRaises(editor.SectionEditError):
+                editor.propose('fixture', 'bounded task', 'public/dash.js', original,
+                               self.contract_for(original), lambda *args: self.fail('Secret context sent'))
+
     def test_bad_or_noop_model_replies_rejected(self):
         for replacement in ('', self.section.decode(), 'x' * 40001, '\0', '\ud800', None,
                             'ghp_untrusted', 'AIzauntrusted', '-----BEGIN PRIVATE KEY-----'):
