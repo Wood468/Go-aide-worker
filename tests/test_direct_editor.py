@@ -67,6 +67,16 @@ class SingleFileEditorTests(unittest.TestCase):
                 editor.edit(self.folder,["WORKER_SMOKE_TEST.txt"],"test","dummy",
                     generator=lambda key,prompt,path,existing:"github_pat_fake")
 
+    def test_hidden_controls_are_rejected_before_replacing_original_bytes(self):
+        original = b"const value = true;\r\n"
+        self.target.write_bytes(original)
+        for value in [*range(0, 9), 11, 12, *range(14, 32), 127]:
+            with self.subTest(control=value), patch.dict(os.environ, {"EDIT_FILES": "WORKER_SMOKE_TEST.txt"}):
+                with self.assertRaises(editor.DirectEditError):
+                    editor.edit(self.folder, ["WORKER_SMOKE_TEST.txt"], "bounded change", "dummy",
+                                generator=lambda *args: "const re = /" + chr(value) + "max/;\n")
+                self.assertEqual(self.target.read_bytes(), original)
+
     def test_rejects_unselected_path(self):
         with patch.dict(os.environ,{"EDIT_FILES":"WORKER_SMOKE_TEST.txt"}):
             with self.assertRaises(editor.DirectEditError):

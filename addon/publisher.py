@@ -16,6 +16,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from text_safety import unsafe_controls
 
 REPO = "Wood468/crispy-barnacle"
 ROOT = "https://api.github.com/repos/" + REPO
@@ -135,7 +136,7 @@ def safe_files(workspace):
         if not stat.S_ISREG(mode) or mode & 0o111:
             raise PublishError("Executable and special files are disallowed")
         data = path.read_bytes()
-        if not data or len(data) > MAX_FILE_BYTES or b"\0" in data:
+        if not data or len(data) > MAX_FILE_BYTES or unsafe_controls(data):
             raise PublishError("Empty, oversized or binary file")
         if any(marker in data for marker in SECRET_MARKERS):
             raise PublishError("Possible credential found in changed file")
