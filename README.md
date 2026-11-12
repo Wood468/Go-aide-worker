@@ -42,7 +42,7 @@ The credential-free `queue_retire_max_anchor_task` can retire only this exact on
 
 `section_editor.py` resolves explicit unique anchors against a SHA-256-bound UTF-8 baseline of at most 250 KB, sends at most 40 KB of selected context to the existing exact-patch generator, and independently proves all outside bytes unchanged. It preserves CRLF/Unicode and rejects stale/ambiguous anchors, invalid or oversized/no-op output, credential markers and hidden control bytes before model input and after generation.
 
-This primitive is **not wired into the queue or publisher**. The 100 KB publication cap and approved source allowlists remain unchanged. Activation requires a versioned immutable section contract, independent publisher baseline/bounds verification, syntax checks, CI, installation and controlled acceptance. Cache edits remain exclusively deterministic.
+This primitive is **not wired into the queue or publisher**. The 100 KB publication cap and approved source allowlists remain unchanged. The inactive v1 request schema binds exactly `version`, `path`, `instruction`, `sha256`, `start` and `end`. `propose_task` uses only that instruction and requires the caller's expected path to match one of the existing source/test-pair source paths; HTML, service-worker and unknown paths are rejected. `verify_task` independently checks the same contract and outside-byte preservation without model access. This schema is NOT a queue task version: dispatch continues to reject it. Activation still requires immutable queue-contract binding, actual publisher baseline/bounds wiring, syntax checks, CI, installation and controlled acceptance. Cache edits remain exclusively deterministic.
 
 ## v0.5.23: immutable source-task publication contract
 

@@ -47,6 +47,41 @@ class SectionEditing(unittest.TestCase):
                                    original, contract,
                                    lambda *args: self.fail('Ambiguous context reached model'))
 
+    def test_versioned_request_binds_path_instruction_and_bounds(self):
+        contract = {**self.contract, 'version': 1, 'path': 'public/today.js',
+                    'instruction': 'Change the approved return value only.'}
+        seen = []
+        def generate(key, instruction, path, section):
+            seen.append((instruction, path))
+            return section.replace('café', 'updated café')
+        updated = editor.propose_task('fixture', 'public/today.js', self.original,
+                                      contract, generate)
+        self.assertEqual(seen, [(contract['instruction'], contract['path'])])
+        self.assertTrue(editor.verify_task(self.original, updated, contract, 'public/today.js'))
+        with self.assertRaises(editor.SectionEditError):
+            editor.verify_task(self.original, b'changed outside' + updated,
+                               contract, 'public/today.js')
+        with self.assertRaises(editor.SectionEditError):
+            editor.verify_task(self.original, updated, contract, 'public/detail.js')
+
+    def test_invalid_versioned_requests_never_call_generator(self):
+        valid = {**self.contract, 'version': 1, 'path': 'public/today.js',
+                 'instruction': 'Change the approved return value only.'}
+        variants = [{**valid, 'version': v} for v in (True, 0, 2, '1')]
+        variants += [{**valid, 'path': p} for p in
+                     ('public/sw.js', 'public/index.html', '../today.js', 'public/dash.js', None)]
+        variants += [{**valid, 'instruction': i} for i in
+                     ('short', ' ' * 30, 'x' * 1501, 'x' * 25 + '\x08',
+                      'x' * 25 + '\ud800', 'x' * 25 + 'github_pat_fixture')]
+        variants += [{**valid, 'extra': 'unapproved'},
+                     {k: v for k, v in valid.items() if k != 'path'},
+                     {**valid, 'sha256': '0' * 64}, {**valid, 'start': 'missing anchor'}]
+        for contract in variants:
+            with self.subTest(contract=contract):
+                with self.assertRaises(editor.SectionEditError):
+                    editor.propose_task('fixture', 'public/today.js', self.original,
+                                        contract, lambda *args: self.fail('Model invoked'))
+
     def test_stale_or_malformed_contract_never_calls_model(self):
         for contract in ({}, {**self.contract, 'sha256': '0' * 64},
                          {**self.contract, 'sha256': True},

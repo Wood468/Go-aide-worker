@@ -96,3 +96,37 @@ def propose(key, prompt, path, original, contract, generator=generate):
     updated = original[:start] + raw + original[end:]
     verify(original, updated, contract)
     return updated
+
+
+def task_contract(contract, expected_path):
+    """Validate an inactive v1 section request; live queue accepts no such schema."""
+    from queue_scope import SOURCE_TEST_PAIRS
+    fields = {'version', 'path', 'instruction', 'sha256', 'start', 'end'}
+    if (not isinstance(contract, dict) or set(contract) != fields
+            or type(contract['version']) is not int or contract['version'] != 1
+            or not isinstance(expected_path, str)
+            or expected_path not in {pair[0] for pair in SOURCE_TEST_PAIRS}
+            or contract['path'] != expected_path):
+        raise SectionEditError('Invalid section task contract')
+    instruction = contract['instruction']
+    if not isinstance(instruction, str) or not 20 <= len(instruction) <= 1500:
+        raise SectionEditError('Invalid section instruction')
+    try:
+        raw = instruction.encode('utf-8')
+    except UnicodeError:
+        raise SectionEditError('Invalid section instruction') from None
+    if (not instruction.strip() or unsafe_controls(raw)
+            or any(marker in raw for marker in SECRET_MARKERS)):
+        raise SectionEditError('Unsafe section instruction')
+    return {key: contract[key] for key in ('sha256', 'start', 'end')}
+
+
+def propose_task(key, expected_path, original, contract, generator=generate):
+    """Use the approved instruction and path, with no caller prompt override."""
+    bounds = task_contract(contract, expected_path)
+    return propose(key, contract['instruction'], expected_path, original, bounds, generator)
+
+
+def verify_task(original, updated, contract, expected_path):
+    """Independent publication-side byte check; never invokes the generator."""
+    return verify(original, updated, task_contract(contract, expected_path))
