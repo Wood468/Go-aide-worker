@@ -8,6 +8,12 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## Bounded-section foundation (inactive; issue #30)
+
+`section_editor.py` resolves an explicitly approved pair of unique anchors against a SHA-256-bound UTF-8 baseline of at most 250 KB, sends at most 40 KB of selected context to the existing exact-patch generator, and independently proves all outside bytes unchanged. It rejects stale/ambiguous anchors, binary/invalid text, oversized/no-op output and credential markers. It performs no file writes or command execution.
+
+This primitive is deliberately **not wired into the queue or publisher**: neither the 100 KB publication cap nor the source allowlist changes. Activation still requires a versioned immutable task contract, independent publisher verification of the original baseline and section bounds, credential-free syntax checks, CI, installation and controlled acceptance. Cache changes remain exclusively deterministic.
+
 ## v0.5.23: immutable source-task publication contract
 
 Source/test publishers now require a SHA-256 identity of the complete parsed task captured before editing, including its instruction. The isolated publisher compares the currently approved task to that identity before any GitHub write and again before creating the draft PR. Same-path instruction changes, missing fingerprints and revoked approval fail closed. A late revocation can leave an unpublished worker branch; the existing no-retry ledger requires review. No broader file grants or source auto-merge are introduced.
