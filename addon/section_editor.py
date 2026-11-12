@@ -1,7 +1,7 @@
-"""Inactive bounded-section editing primitive; no file, shell or credential access.
+"""Bounded-section editing primitive; no file, shell or credential access.
 
-Queue/publisher grants deliberately remain unchanged. Callers must bind this
-contract to the approved task and independently check syntax before publication.
+Single-run queue tasks bind this contract to the approved issue; the publisher
+checks it independently. Background source editing remains disabled.
 """
 import hashlib
 import re
@@ -99,7 +99,7 @@ def propose(key, prompt, path, original, contract, generator=generate):
 
 
 def task_contract(contract, expected_path):
-    """Validate an inactive v1 section request; live queue accepts no such schema."""
+    """Validate the nested v1 section request, bound to its expected source path."""
     from queue_scope import SOURCE_TEST_PAIRS, SECTION_SOURCE_TEST_PAIRS
     fields = {'version', 'path', 'instruction', 'sha256', 'start', 'end'}
     if (not isinstance(contract, dict) or set(contract) != fields
