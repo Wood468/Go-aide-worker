@@ -93,6 +93,19 @@ class ReviewedServiceRecovery(unittest.TestCase):
                     'WORKER_FILE_ALLOWLIST': json.dumps(paths)}
         return paths
 
+    def test_actual_recovery_cli_accepts_full_source_scope_but_loop_rejects_it(self):
+        self.source_fixture()
+        with patch.object(q, 'LOCK', Path(self.temp.name) / 'queue.lock'), \
+             patch.object(q, 'isolate_reviewed_service_failure', return_value=True) as isolate, \
+             patch.dict(os.environ, self.env, clear=True), \
+             patch.object(sys, 'argv', ['queue_worker.py', 'isolate_reviewed_service_failure']):
+            q.main()
+            isolate.assert_called_once_with()
+        with patch.dict(os.environ, self.env, clear=True), \
+             patch.object(sys, 'argv', ['queue_worker.py', 'loop']):
+            with self.assertRaises(queue_scope.ScopeError):
+                q.main()
+
     def test_reviewed_section_format_failure_is_one_way_with_full_scope_audit(self):
         paths = self.source_fixture()
         self.run_case()

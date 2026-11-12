@@ -8,6 +8,10 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.31: recovery CLI scope
+
+The recovery CLI accepts the complete operator-reviewed source/test/cache scope. Queue Loop still validates test-only paths. An entry-point test proves both routes; reviewed-isolation function tests alone missed this distinction in v0.5.30. No ledger mutation happened in the rejected invocation.
+
 ## v0.5.30: typed provider responses and reviewed section-format failures
 
 Gemini requests now include a response schema fixing the exact selected path and either full content or bounded replacements. Client validation remains mandatory; thought parts are excluded from structured output parsing. No malformed-response retry was added.
