@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """GitHub-approved bounded task queue. No arbitrary scripts, merges or deployments."""
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -191,6 +192,12 @@ def parse_task(issue):
         return {"issue": issue["number"], "version": version,
                 "paths": list(paths), "instruction": instruction.strip()}
     return None
+
+
+def task_fingerprint(task):
+    """Stable identity of the complete parsed contract, including instruction."""
+    return hashlib.sha256(json.dumps(task, sort_keys=True, separators=(",", ":"),
+                                     ensure_ascii=True).encode("ascii")).hexdigest()
 
 
 def candidates(fetch=github_read):
@@ -1142,7 +1149,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
         raise QueueError("Missing queue credentials")
     prior = state.get(key, {})
     attempts = 2 if isinstance(prior, dict) and prior.get("state") == "approved-pilot-retry" else 1
-    state[key] = {"state": "started", "attempts": attempts}
+    contract_sha = task_fingerprint(task)
+    state[key] = {"state": "started", "attempts": attempts, "task_sha256": contract_sha}
     save_ledger(state)
     stage = "refresh"
     try:
@@ -1225,6 +1233,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
                                     WORKER_ISSUE_NUMBER=key)
         if multi:
             publication_env["WORKER_APPROVED_PATHS"] = json.dumps(paths)
+            publication_env["WORKER_TASK_SHA256"] = contract_sha
         stage = "publish"
         out = runner([sys.executable, "/opt/worker/publisher.py"], publication_env)
         matched = re.search(rb"Created draft PR #(\d+)", out)
@@ -1232,6 +1241,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
             raise QueueError("No verified PR number; inspect GitHub before retry")
         number = int(matched.group(1))
         state[key] = {"state": "submitted", "pr": number, "attempts": attempts}
+        if multi:
+            state[key]["task_sha256"] = contract_sha
         save_ledger(state)
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
@@ -1243,6 +1254,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if ((isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"})
                 or (isinstance(exc, PublisherChildError) and stage == "publish")):
             failure["failure_category"] = exc.category
+        if task.get("version") in (2, 3):
+            failure["task_sha256"] = contract_sha
         state[key] = failure
         save_ledger(state)
         raise

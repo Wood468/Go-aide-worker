@@ -105,7 +105,8 @@ class CacheContractTests(unittest.TestCase):
                 if endpoint=="/pulls":return {"number":502,"draft":True}
                 self.fail("Unexpected API path")
             with patch.dict(os.environ,{"WORKER_ISSUE_NUMBER":"501",
-                   "WORKER_APPROVED_PATHS":json.dumps(pair)}):
+                   "WORKER_APPROVED_PATHS":json.dumps(pair),
+                   "WORKER_TASK_SHA256":queue_worker.task_fingerprint(queue_worker.parse_task(issue()))}):
                 try:
                     result=publisher.publish(self.root,"dummy",request,"abcdef123456")
                 except publisher.PublishError:
