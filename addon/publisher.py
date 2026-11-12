@@ -17,6 +17,7 @@ import sys
 import urllib.error
 import urllib.request
 from text_safety import unsafe_controls
+import queue_scope
 
 REPO = "Wood468/crispy-barnacle"
 ROOT = "https://api.github.com/repos/" + REPO
@@ -38,6 +39,7 @@ class PublishError(Exception):
 # raw exception details, remote response bodies, request paths or credentials.
 SAFE_PUBLISH_ERRORS = {
     "Missing GitHub token": "missing-token",
+    "Queued task requires explicit file scope": "task-contract",
     "Main moved since checkout; refresh before publishing": "stale-main",
     "GitHub API unavailable": "github-unavailable",
     "Approved GitHub task was revoked or changed": "approval-changed",
@@ -172,6 +174,14 @@ def publish(workspace, token, request=api, branch_id=None):
     if not isinstance(token, str) or not token.strip():
         raise PublishError("Missing GitHub token")
     local_head, files = safe_files(workspace)
+    if os.environ.get("WORKER_ISSUE_NUMBER"):
+        try:
+            allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"))
+            dispatch = queue_scope.parse(os.environ.get("WORKER_DISPATCH_SCOPE"))
+        except queue_scope.ScopeError:
+            raise PublishError("Queued task requires explicit file scope") from None
+        if not set(dispatch).issubset(allowlist) or [p for p, _ in files] != sorted(dispatch):
+            raise PublishError("Edited files differ from approved task scope")
     approved_raw = os.environ.get("WORKER_APPROVED_PATHS")
     if approved_raw is not None:
         # Multi-file queue tasks are never allowed to use the unrestricted

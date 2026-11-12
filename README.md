@@ -8,6 +8,22 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.28: reviewed pre-publication service failure isolation
+
+A new credential-free `queue_isolate_reviewed_failure` action replaces per-issue recovery releases for a narrow failure class. It can retire only a one-attempt, existing flat-test task held at `edit-single/service`, before publication. It cannot retry, edit, publish, clear other records or isolate quota/auth/model/source/publish/unknown failures. New task outcomes always retain their immutable task SHA-256; the single historical #599 row has an explicitly pinned compatibility hash.
+
+An independent operator must withdraw both worker approval labels, add `go-worker-failure-reviewed`, inspect the unchanged original contract, and provide the exact structured receipt in Job prompt: `{"issue":599,"path":"test/event-moves.test.mjs","task_sha256":"<64 lowercase hex characters>"}`. Files to edit must contain that same single test path. Run with queue opt-in ON and editing/publishing OFF. The worker receives neither provider credential, verifies owner/labels/hash/state and complete bounded PR/branch history, then retains the hash and failure details in a one-way retired record. Missing API evidence or changed approvals fail closed. Verify via queue_status, restore idle/off and never replay the failed issue.
+
+This is explicit reviewed isolation, not automatic failure skipping or a general ledger reset. A new task is needed for any subsequent implementation. Gemini service availability remains an external dependency.
+
+## v0.5.27: enforce an explicit operator file allowlist for queue jobs
+
+Queue Once and Queue Loop now require the existing `edit_files` setting as an actual allowlist (one to five unique safe paths). Startup and the job runner reject an absent or invalid allowlist before dispatch. The queue filters owner-approved tasks against it before claim; the publisher independently requires both the operator allowlist and exact per-task file scope before any GitHub write. File selection is now supported for queue actions instead of being refused as a manual-edit-only option.
+
+Queue Loop accepts **only existing flat `test/*.test.mjs` paths** in that list, and continues to reject every source/test/cache contract and new documentation task. Queue Once retains the reviewed source/test/cache contracts only when every task path is explicitly allowlisted. Existing issue author, approval, immutable source contract, ledger, CI and draft-only safeguards remain. No new credential authority, automatic retry or source merge permission is introduced.
+
+Example bounded background scope: set Files to edit to `test/event-moves.test.mjs`; only owner-approved tasks for that file can dispatch. Leave all opt-ins OFF during installation. Verify version and read-only ledger first, then run one bounded acceptance. Empty scope fails closed on upgrade; do not treat an accepted options write as proof a job ran.
+
 ## v0.5.26: compatible, repeatable deterministic cache updates
 
 The first source/test/cache pilot exposed that worker-suffixed shell names violate the existing application cache contract. The helper now increments the numeric `gofn-shell-vN` revision; application tests remain unchanged. Source URL tokens replace a prior worker suffix rather than rejecting or chaining it, so subsequent tasks on the same file work without code changes. Positive ASCII issue IDs, numeric revision limits, exact baseline matching and independent publisher recomputation remain fail-closed. No broader model access to cache files or merge authority is introduced.

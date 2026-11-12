@@ -173,12 +173,12 @@ class RestrictedJobs(unittest.TestCase):
 
     def test_queue_loop_requires_explicit_environment_and_execs_without_timeout(self):
         with patch.dict(os.environ,{"ENABLE_QUEUE":"true","GEMINI_API_KEY":"test",
-                                     "GITHUB_TOKEN":"test"},clear=True):
+                                     "GITHUB_TOKEN":"test", "WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]'},clear=True):
             self.assertEqual(runner.validate_job(self.job("queue_loop"),self.workspace)[0],
                              "queue_loop")
             self.assertEqual(runner.command_for("queue_loop","")[-1],"loop")
         with patch.dict(os.environ,{"ENABLE_QUEUE":"false","GEMINI_API_KEY":"test",
-                                     "GITHUB_TOKEN":"test"},clear=True):
+                                     "GITHUB_TOKEN":"test", "WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]'},clear=True):
             with self.assertRaises(runner.JobError):
                 runner.validate_job(self.job("queue_loop"),self.workspace)
 
@@ -341,7 +341,7 @@ class RestrictedJobs(unittest.TestCase):
                 return process
             with (patch.dict(os.environ,{"ENABLE_QUEUE":"true",
                                         "GEMINI_API_KEY":"fake-gemini",
-                                        "GITHUB_TOKEN":"fake-github"}),
+                                        "GITHUB_TOKEN":"fake-github", "WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]'}),
                   patch.object(runner.subprocess,"Popen",side_effect=fake_popen),
                   redirect_stdout(StringIO()) as output):
                 self.assertEqual(runner.run(job,self.workspace),2)
@@ -400,7 +400,7 @@ class RestrictedJobs(unittest.TestCase):
                 return process
             with (patch.dict(os.environ, {"ENABLE_QUEUE": "true",
                                            "GEMINI_API_KEY": "gemini-private",
-                                           "GITHUB_TOKEN": "github-private"}),
+                                           "GITHUB_TOKEN": "github-private", "WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]'}),
                   patch.object(runner.subprocess, "Popen", side_effect=fake_popen),
                   redirect_stdout(StringIO()) as output):
                 self.assertEqual(runner.run(job, self.workspace), 0)
@@ -426,7 +426,7 @@ class RestrictedJobs(unittest.TestCase):
                 return process
             with (patch.dict(os.environ, {"ENABLE_QUEUE": "true",
                                            "GEMINI_API_KEY": "gemini-private",
-                                           "GITHUB_TOKEN": "github-private"}),
+                                           "GITHUB_TOKEN": "github-private", "WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]'}),
                   patch.object(runner.subprocess, "Popen", side_effect=fake_popen),
                   redirect_stdout(StringIO()) as output):
                 self.assertEqual(runner.run(job, self.workspace), 0)

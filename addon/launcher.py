@@ -9,12 +9,13 @@ import os
 import re
 from pathlib import Path
 import sys
+import queue_scope
 
 OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
 JOB = Path("/data/job.json")
 UID = 10001
-ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"}
+ACTION_SET = {"idle", "prepare", "refresh", "inspect", "test", "edit", "verify", "publish", "probe", "direct_edit", "publish_test", "queue_scan", "queue_once", "queue_loop", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"}
 REPOSITORY = "Wood468/crispy-barnacle"
 
 
@@ -50,15 +51,27 @@ def read_options(path=OPTIONS):
                 or any(x.startswith(".") or x in {"", ".", ".."} for x in path.split("/"))
                 or any("token" in x.lower() or "secret" in x.lower() for x in path.split("/"))):
             raise ConfigurationError("Unsafe edit file path")
-    if action not in {"edit", "direct_edit"} and selected:
+    if action not in {"edit", "direct_edit", "queue_once", "queue_loop", "queue_isolate_reviewed_failure"} and selected:
         raise ConfigurationError("File selection is only available for edit jobs")
+    if action in {"queue_once", "queue_loop"}:
+        try:
+            queue_scope.validate(selected, unattended=(action == "queue_loop"))
+        except queue_scope.ScopeError:
+            raise ConfigurationError("Queue requires an explicit safe file allowlist") from None
+    if action == "queue_isolate_reviewed_failure":
+        try:
+            review = queue_scope.review_request(prompt)
+            if selected != [review["path"]]:
+                raise queue_scope.ScopeError("Failure review scope mismatch")
+        except queue_scope.ScopeError:
+            raise ConfigurationError("Recovery requires an exact safe review receipt and file") from None
     if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool) or not isinstance(queue_enabled, bool):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
         raise ConfigurationError("Invalid key configuration")
-    if action in {"queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and (enabled or publish_enabled):
+    if action in {"queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"} and (enabled or publish_enabled):
         raise ConfigurationError("Merged pilot acknowledgement requires editing and publishing disabled")
-    if action in {"queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"} and not queue_enabled:
+    if action in {"queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"} and not queue_enabled:
         raise ConfigurationError("Pilot recovery requires explicit queue opt-in")
     if action in {"queue_once", "queue_loop"} and (not queue_enabled or not enabled or not publish_enabled or not api_key.strip() or not github_token.strip()):
         raise ConfigurationError("Queue requires all three opt-ins and both credentials")
@@ -126,7 +139,7 @@ def main():
     action, prompt, enabled, api_key, publish_enabled, github_token, edit_files = read_options()
     protect_options()
     prepare_directory()
-    if action not in {"idle", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"}:
+    if action not in {"idle", "queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"}:
         stage_job(action, prompt)
     # Set only the environment needed by the unprivileged worker.
     environment = {
@@ -149,13 +162,17 @@ def main():
         environment["GEMINI_API_KEY"] = api_key
         environment["GITHUB_TOKEN"] = github_token
         environment["ENABLE_QUEUE"] = "true"
+        environment["WORKER_FILE_ALLOWLIST"] = json.dumps(edit_files.split(","))
+    if action == "queue_isolate_reviewed_failure":
+        environment["WORKER_FAILURE_REVIEW"] = prompt
+        environment["WORKER_FILE_ALLOWLIST"] = json.dumps(edit_files.split(","))
     if action in {"publish", "publish_test"}:
         environment["ENABLE_PUBLISHING"] = "true"
         environment["GITHUB_TOKEN"] = github_token
     os.setgroups([])
     os.setgid(UID)
     os.setuid(UID)
-    if action in {"queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task"}:
+    if action in {"queue_status", "queue_recover_pilot", "queue_recover_code_pilot", "queue_ack_code_pilot", "queue_recover_artwork_task", "queue_retire_artwork_task", "queue_retire_two_file_pilot", "queue_retire_venue_clock_task", "queue_retire_four_file_pilot", "queue_retire_banner_cache_task", "queue_retire_two_file_service_task", "queue_retire_places_publish_task", "queue_retire_rotation_service_task", "queue_retire_max_anchor_task", "queue_isolate_reviewed_failure"}:
         # Read-only status or one tightly scoped ledger recovery. Neither
         # receives Gemini/GitHub secrets or any edit/publish permission.
         import preflight
@@ -173,7 +190,8 @@ def main():
                 "queue_retire_two_file_service_task": "retire_two_file_service_task",
                 "queue_retire_places_publish_task": "retire_places_publish_task",
                 "queue_retire_rotation_service_task": "retire_rotation_service_task",
-                "queue_retire_max_anchor_task": "retire_max_anchor_task"}[action]
+                "queue_retire_max_anchor_task": "retire_max_anchor_task",
+                "queue_isolate_reviewed_failure": "isolate_reviewed_service_failure"}[action]
         os.execve(sys.executable, [sys.executable, "/opt/worker/queue_worker.py", mode],
                   environment)
     if action == "idle":

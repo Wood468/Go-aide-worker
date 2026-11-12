@@ -117,7 +117,8 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen):
                 continue
             category = ("auth" if e.code in (401, 403) else
                         "quota" if e.code == 429 else
-                        "model" if e.code in (400, 404) else "service")
+                        "model" if e.code in (400, 404) else
+                        "service-" + str(e.code) if e.code in (500, 502, 503, 504) else "service")
             raise DirectEditError("Gemini request rejected: " + category) from None
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             raise DirectEditError("Gemini connection or response error") from None

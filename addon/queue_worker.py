@@ -11,6 +11,8 @@ import sys
 import time
 import signal
 import threading
+import queue_scope
+from queue_scope import SOURCE_TEST_PAIRS
 import urllib.error
 import urllib.request
 
@@ -24,12 +26,6 @@ LOCK = ROOT / ".go-queue.lock"
 PATH_RE = re.compile(r"(?:docs/worker-task-[a-z0-9-]{1,50}\.md|test/[A-Za-z0-9][A-Za-z0-9_.-]{0,100}\.test\.mjs)")
 TASK_RE = re.compile(r"^GO_WORKER_TASK_JSON:(\{[^\n]{1,2400}\})$", re.MULTILINE)
 # Reviewed source-to-test pairs; no arbitrary source grant.
-SOURCE_TEST_PAIRS = {
-    ("public/event-components.js", "test/event-components-crowned-alias.test.mjs"),
-    ("public/today.js", "test/today-logic.test.mjs"),
-    ("public/detail.js", "test/event-detail-source-confidence.test.mjs"),
-    ("public/app.js", "test/universal-event.test.mjs"),
-}
 
 
 class QueueError(Exception):
@@ -81,6 +77,9 @@ EDITOR_FAILURES = {
     b"Direct Gemini edit rejected: Exactly one validated edit target required": "safety",
     b"Direct Gemini edit rejected: JobError": "safety",
 }
+# Safe finite HTTP status diagnostics; never copy response bodies/headers.
+for _status in (500, 502, 503, 504):
+    EDITOR_FAILURES[("Direct Gemini edit rejected: Gemini request rejected: service-" + str(_status)).encode("ascii")] = "service-" + str(_status)
 EDITOR_CATEGORIES = frozenset(EDITOR_FAILURES.values()) | {"unknown", "timeout"}
 
 
@@ -147,7 +146,7 @@ def github_read(url, opener=urllib.request.urlopen):
         raise QueueError("Queue request unavailable") from None
 
 
-def parse_task(issue):
+def parse_task(issue, require_approval=True):
     if not isinstance(issue, dict) or "pull_request" in issue:
         return None
     author = issue.get("user") or {}
@@ -155,7 +154,7 @@ def parse_task(issue):
             or not isinstance(issue.get("number"), int)
             or not str(issue.get("title", "")).startswith("[GO-WORKER] ")):
         return None
-    if "go-worker-approved" not in {
+    if require_approval and "go-worker-approved" not in {
             label.get("name") for label in issue.get("labels", []) if isinstance(label, dict)}:
         return None
     body = issue.get("body")
@@ -977,8 +976,9 @@ def retire_failed_max_anchor_task(path=LEDGER, fetch=github_read):
 
 
 def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
-                                  expected_failure, owned_paths, reason, message):
-    """Retire only #563 after complete read-only no-publication verification.
+                                  expected_failure, owned_paths, reason, message,
+                                  required_review_label=None, retired_details=None):
+    """Shared no-publication audit for fixed or explicitly reviewed retirements.
 
     This action is deliberately NOT a generic retry/reset. It has no
     GitHub write capability and is launched with neither provider credential.
@@ -1008,7 +1008,10 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
                    for label in labels)
             or any(label["name"] == "go-worker-approved" for label in labels)
             or not isinstance(contract, dict)
-            or contract != contract_expected):
+            or contract != contract_expected
+            or (required_review_label is not None and (
+                required_review_label not in {label["name"] for label in labels}
+                or "go-worker-auto-merge-approved" in {label["name"] for label in labels}))):
         raise QueueError("Rotation task identity, contract or approval changed")
 
     iso = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"
@@ -1153,12 +1156,54 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
 
     # Only one immutable ledger entry changes; all prior results survive.
     state[str(number)] = {"state": "retired", "attempts": 1, "reason": reason}
+    if retired_details:
+        state[str(number)].update(retired_details)
     save_ledger(state, path)
     print(message, flush=True)
     return True
 
 
+REVIEW_LABEL = "go-worker-failure-reviewed"
+# One pre-fingerprint historical row; future failures must retain their hash.
+LEGACY_SERVICE_REVIEW = {599: '7fd9519525679cbeb75a381ecdb7cdec737607c247411bda9c31b512eacf68a3'}
+
+
+def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
+    """One reviewed legacy-test HTTP service failure; never retry or publish."""
+    receipt = queue_scope.review_request(os.environ.get("WORKER_FAILURE_REVIEW"))
+    allowed = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=True)
+    if allowed != [receipt["path"]]:
+        raise QueueError("Failure review scope mismatch")
+    state = read_ledger(path)
+    record = state.get(str(receipt["issue"]))
+    required = {"state", "attempts", "failure_stage", "failure_category"}
+    if (not isinstance(record, dict) or set(record) not in (required, required | {"task_sha256"})
+            or record.get("state") != "needs-review" or type(record.get("attempts")) is not int
+            or record["attempts"] != 1 or record.get("failure_stage") != "edit-single"
+            or record.get("failure_category") not in {"service", "service-500", "service-502", "service-503", "service-504"}
+            or ("task_sha256" not in record and LEGACY_SERVICE_REVIEW.get(receipt["issue"]) != receipt["task_sha256"])
+            or ("task_sha256" in record and record["task_sha256"] != receipt["task_sha256"])):
+        raise QueueError("Failure not eligible for reviewed isolation")
+    issue = fetch("https://api.github.com/repos/" + REPO + "/issues/" + str(receipt["issue"]))
+    # Parse the original owner contract after approval has been withdrawn.
+    # Default dispatch/publication parsing still requires live approval.
+    task = parse_task(issue, require_approval=False)
+    if (not task or "version" in task or task.get("path") != receipt["path"]
+            or task_fingerprint(task) != receipt["task_sha256"]):
+        raise QueueError("Reviewed failure contract changed")
+    return _retire_reviewed_edit_failure(path, fetch, receipt["issue"], issue["title"],
+        {"path": task["path"], "instruction": task["instruction"]}, record, {task["path"]},
+        "operator-reviewed-edit-service-no-retry",
+        "Reviewed edit-service task #" + str(receipt["issue"]) + " isolated without retry or PR",
+        required_review_label=REVIEW_LABEL,
+        retired_details={"task_sha256": receipt["task_sha256"], "failure_stage": "edit-single",
+                         "failure_category": record["failure_category"]})
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
+    if "WORKER_FILE_ALLOWLIST" in os.environ and not queue_scope.permits(
+            task, queue_scope.parse(os.environ["WORKER_FILE_ALLOWLIST"])):
+        raise QueueError("Task outside explicit queue allowlist")
     key = str(task["issue"])
     if not approved_for_dispatch(task, state) or has_pending_review(state, fetch):
         return False
@@ -1248,8 +1293,13 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
                                        "/issues/" + key)) != task:
             raise QueueError("Multi-file approval revoked before publication")
+        global_scope = queue_scope.parse(os.environ["WORKER_FILE_ALLOWLIST"]) if "WORKER_FILE_ALLOWLIST" in os.environ else paths
+        if not queue_scope.permits(task, global_scope):
+            raise QueueError("Task outside explicit queue allowlist")
         publication_env = child_env(GITHUB_TOKEN=github, ENABLE_PUBLISHING="true",
-                                    WORKER_ISSUE_NUMBER=key)
+                                    WORKER_ISSUE_NUMBER=key,
+                                    WORKER_FILE_ALLOWLIST=json.dumps(global_scope),
+                                    WORKER_DISPATCH_SCOPE=json.dumps(paths))
         if multi:
             publication_env["WORKER_APPROVED_PATHS"] = json.dumps(paths)
             publication_env["WORKER_TASK_SHA256"] = contract_sha
@@ -1260,8 +1310,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
             raise QueueError("No verified PR number; inspect GitHub before retry")
         number = int(matched.group(1))
         state[key] = {"state": "submitted", "pr": number, "attempts": attempts}
-        if multi:
-            state[key]["task_sha256"] = contract_sha
+        state[key]["task_sha256"] = contract_sha
         save_ledger(state)
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
@@ -1273,21 +1322,24 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if ((isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"})
                 or (isinstance(exc, PublisherChildError) and stage == "publish")):
             failure["failure_category"] = exc.category
-        if task.get("version") in (2, 3):
-            failure["task_sha256"] = contract_sha
+        failure["task_sha256"] = contract_sha
         state[key] = failure
         save_ledger(state)
         raise
 
 
 def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
-         unattended=False):
+         unattended=False, allowlist=None):
+    if allowlist is not None:
+        allowlist = queue_scope.validate(allowlist, unattended=unattended)
     tasks = candidates(fetch)
     if unattended:
         # Continuous background execution is limited to the previously proven
         # legacy single-file docs / existing flat test contract. Version-two
         # and version-three source+test jobs require an explicit manual pilot.
         tasks = [task for task in tasks if "version" not in task]
+    if allowlist is not None:
+        tasks = [t for t in tasks if queue_scope.permits(t, allowlist, unattended)]
     state = read_ledger(ledger_path)
     if scan:
         waiting = sum(approved_for_dispatch(t, state) for t in tasks)
@@ -1316,15 +1368,18 @@ def once(scan=False, fetch=github_read, runner=child_run, ledger_path=LEDGER,
 
 def main():
     mode = sys.argv[1] if len(sys.argv) == 2 else None
-    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task", "retire_max_anchor_task"):
+    if mode not in ("scan", "once", "loop", "status", "recover_pilot", "recover_code_pilot", "recover_artwork_task", "ack_code_pilot", "retire_artwork_task", "retire_two_file_pilot", "retire_venue_clock_task", "retire_four_file_pilot", "retire_banner_cache_task", "retire_two_file_service_task", "retire_places_publish_task", "retire_rotation_service_task", "retire_max_anchor_task", "isolate_reviewed_service_failure"):
         raise QueueError("Invalid queue mode")
+    allowlist = None
+    if mode in {"once", "loop", "isolate_reviewed_service_failure"}:
+        allowlist = queue_scope.parse(os.environ.get("WORKER_FILE_ALLOWLIST"), unattended=(mode != "once"))
     with LOCK.open("a+b") as lock:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise QueueError("Another queue worker holds the lock") from None
         if mode == "loop":
-            print("Approved queue active: legacy single-file tasks only; one draft PR at a time", flush=True)
+            print("Approved queue active: explicit test-file allowlist only; one draft PR at a time", flush=True)
             shutdown = threading.Event()
             previous_handler = signal.getsignal(signal.SIGTERM)
             def request_shutdown(_signum, _frame):
@@ -1335,7 +1390,7 @@ def main():
             try:
                 while not shutdown.is_set():
                     try:
-                        once(unattended=True)
+                        once(unattended=True, allowlist=allowlist)
                     except (QueueError, OSError, ValueError):
                         print("Queue iteration failed; task held for review", flush=True)
                     shutdown.wait(600)
@@ -1370,8 +1425,10 @@ def main():
             retire_failed_rotation_service_task()
         elif mode == "retire_max_anchor_task":
             retire_failed_max_anchor_task()
+        elif mode == "isolate_reviewed_service_failure":
+            isolate_reviewed_service_failure()
         else:
-            once(scan=(mode == "scan"))
+            once(scan=(mode == "scan"), allowlist=allowlist)
 
 
 if __name__ == "__main__":
