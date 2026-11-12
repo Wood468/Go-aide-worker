@@ -8,6 +8,10 @@ This add-on can run an **opt-in GitHub-approved task queue** without exposing an
 
 Home Assistant's Configuration screen has a masked `GitHub fine-grained token` field. This release **stores and validates the token only**. The launcher deliberately does not pass it to Aider, normal jobs, or subprocess environments. Branch and draft-PR publication exists only in the explicitly gated publish action (v0.3.0). Only store a token scoped to `Wood468/crispy-barnacle`; do not paste tokens into issues, prompts or source files.
 
+## v0.5.26: compatible, repeatable deterministic cache updates
+
+The first source/test/cache pilot exposed that worker-suffixed shell names violate the existing application cache contract. The helper now increments the numeric `gofn-shell-vN` revision; application tests remain unchanged. Source URL tokens replace a prior worker suffix rather than rejecting or chaining it, so subsequent tasks on the same file work without code changes. Positive ASCII issue IDs, numeric revision limits, exact baseline matching and independent publisher recomputation remain fail-closed. No broader model access to cache files or merge authority is introduced.
+
 ## v0.5.25: reject hidden control bytes before writing or publishing
 
 Independent review of source/test/cache pilot #595 / app draft #596 found literal backspace bytes in a model-generated JavaScript regex (JSON `\\b` escaping was wrong), plus a test using the wrong API. The shared UTF-8 text guard now rejects C0 controls other than tab/newline/carriage return, and DEL, in both the editor before atomic replacement and the independent publisher. Correct escaped regex bytes, Unicode and ordinary whitespace remain unchanged. This guard prevents hidden byte corruption; semantic correctness still requires independent review and full CI. No automatic repair, task retry, scope expansion or source merge permission is added.
