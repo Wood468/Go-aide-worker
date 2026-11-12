@@ -54,7 +54,7 @@ class ReviewedServiceRecovery(unittest.TestCase):
                 return {'sha':sha,'commit':{'committer':{'date':'2026-11-12T08:00:00Z'}}}
             if '/compare/main...' in url:
                 return {'status':'ahead','total_commits':2,'ahead_by':2,
-                        'commits':[{'sha':'b'*40},{'sha':sha}], 'files':[{'filename':PATH}]}
+                        'commits':[{'sha':'b'*40},{'sha':sha}], 'files':[{'filename':getattr(self, 'audit_path', PATH)}]}
             self.fail('Unexpected read endpoint')
         with patch.dict(os.environ, env if env is not None else self.env, clear=True):
             if failure:
@@ -74,6 +74,40 @@ class ReviewedServiceRecovery(unittest.TestCase):
                 with self.assertRaises(q.QueueError):
                     q.isolate_reviewed_service_failure(self.ledger, fetch)
         return calls
+
+    def source_fixture(self):
+        paths = ['public/dash.js', 'test/event-detail-source-confidence.test.mjs',
+                 'public/app.js', 'public/index.html', 'public/sw.js']
+        instruction = 'Add one source comment and source-backed regression test.'
+        self.task = {'issue': 700, 'version': 4, 'paths': paths, 'instruction': instruction,
+                     'section': {'version': 1, 'path': paths[0], 'instruction': instruction,
+                                 'sha256': 'a' * 64, 'start': 'function sourceAnchor() {',
+                                 'end': '} // source anchor end'}}
+        self.digest = q.task_fingerprint(self.task)
+        self.receipt = {'issue': 700, 'path': paths[0], 'task_sha256': self.digest}
+        self.record = {'state': 'needs-review', 'attempts': 1, 'failure_stage': 'edit-source',
+                       'failure_category': 'format', 'task_sha256': self.digest}
+        self.initial['700'] = self.record
+        self.issue['body'] = 'GO_WORKER_TASK_JSON:' + json.dumps({k:v for k,v in self.task.items() if k != 'issue'})
+        self.env = {'WORKER_FAILURE_REVIEW': json.dumps(self.receipt),
+                    'WORKER_FILE_ALLOWLIST': json.dumps(paths)}
+        return paths
+
+    def test_reviewed_section_format_failure_is_one_way_with_full_scope_audit(self):
+        paths = self.source_fixture()
+        self.run_case()
+        for path in paths:
+            self.audit_path = path
+            self.run_case(branch=True, failure=True)
+        for record in ({**self.record, 'failure_stage': 'edit-test'},
+                       {**self.record, 'failure_stage': 'publish'},
+                       {**self.record, 'failure_category': 'quota'},
+                       {**self.record, 'attempts': 2},
+                       {k:v for k,v in self.record.items() if k != 'task_sha256'}):
+            self.run_case(record=record, failure=True)
+        self.run_case(env={**self.env, 'WORKER_FILE_ALLOWLIST': json.dumps(paths[:1])}, failure=True)
+        self.run_case(issue={**self.issue, 'labels': []}, failure=True)
+        self.test_ha_recovery_child_has_no_provider_or_publishing_credentials()
 
     def test_one_reviewed_service_failure_is_retired_once_with_audit_preserved(self):
         self.run_case()
@@ -119,14 +153,14 @@ class ReviewedServiceRecovery(unittest.TestCase):
                     {**self.env,'WORKER_FAILURE_REVIEW':json.dumps({**self.receipt,'task_sha256':'0'*64})}):
             with self.subTest(env=env): self.run_case(env=env, failure=True)
         for receipt in ({**self.receipt,'issue':True}, {**self.receipt,'path':'../.env'},
-                        {**self.receipt,'path':'public/today.js'}, {**self.receipt,'extra':'ignored'}):
+                        {**self.receipt,'path':'public/sw.js'}, {**self.receipt,'extra':'ignored'}):
             with self.subTest(receipt=receipt), self.assertRaises(queue_scope.ScopeError):
                 queue_scope.review_request(json.dumps(receipt))
 
     def test_ha_recovery_child_has_no_provider_or_publishing_credentials(self):
         options = Path(self.temp.name) / 'options.json'
         base = {'job_action':'queue_isolate_reviewed_failure','job_prompt':json.dumps(self.receipt),
-                'edit_files':PATH,'enable_queue':True,'enable_edits':False,'enable_publishing':False,
+                'edit_files':','.join(json.loads(self.env['WORKER_FILE_ALLOWLIST'])),'enable_queue':True,'enable_edits':False,'enable_publishing':False,
                 'gemini_api_key':'fake-gemini-private','github_token':'fake-github-private'}
         for change in ({'enable_edits':True},{'enable_publishing':True},{'enable_queue':False},
                        {'edit_files':'test/escape.test.mjs'},{'job_prompt':'arbitrary command'}):
