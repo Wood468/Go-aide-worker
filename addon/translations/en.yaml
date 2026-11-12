@@ -4,7 +4,7 @@ configuration:
     description: "Idle does nothing. Queue Scan is read-only; Queue Loop polls approved issues every ten minutes when enabled. Refresh securely replaces the old isolated public checkout with latest main. Probe tests Gemini API. Direct Edit uses Gemini to change one selected text file without Aider or shell commands. Verify checks the Gemini smoke-test file. Publish Test creates then closes a temporary draft PR and deletes its branch. Publish submits up to ten allowed files to a new draft PR and is disabled by default."
   edit_files:
     name: Files to edit (comma-separated)
-    description: "Optional, up to five safe repository-relative file paths. Explicit file selection makes Aider more reliable; never enter secrets or system paths."
+    description: "Required allowlist for queue jobs: up to five safe paths. Queue Loop accepts existing flat test/*.test.mjs files only. Queue Once can also use reviewed source/test/cache paths. Manual edits use these paths as model context."
   job_prompt:
     name: Coding task prompt
     description: "Required only for Edit. Do not paste keys, tokens or other secrets."

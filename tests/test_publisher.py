@@ -287,6 +287,7 @@ class DraftPublisher(unittest.TestCase):
                 self.fail("Unexpected GitHub API operation")
             with patch.dict(os.environ,{
                     "WORKER_ISSUE_NUMBER":"600",
+                    "WORKER_FILE_ALLOWLIST":json.dumps(pair), "WORKER_DISPATCH_SCOPE":json.dumps(pair),
                     "WORKER_APPROVED_PATHS":json.dumps(pair if paths is None else paths),
                     "WORKER_TASK_SHA256":queue_worker.task_fingerprint(queue_worker.parse_task(approved()))}):
                 try:
@@ -343,7 +344,8 @@ class DraftPublisher(unittest.TestCase):
                     if endpoint == "/git/refs": return {}
                     if endpoint == "/pulls": self.fail("Changed contract must never publish")
                     return {"sha": "fixture-object"}
-                env = {"WORKER_ISSUE_NUMBER": "600", "WORKER_APPROVED_PATHS": json.dumps(pair)}
+                env = {"WORKER_ISSUE_NUMBER": "600", "WORKER_APPROVED_PATHS": json.dumps(pair),
+                       "WORKER_FILE_ALLOWLIST": json.dumps(pair), "WORKER_DISPATCH_SCOPE": json.dumps(pair)}
                 if fingerprint is not None: env["WORKER_TASK_SHA256"] = fingerprint
                 with (patch.dict(os.environ, env, clear=True),
                       patch.object(publisher, "safe_files", return_value=(self.sha, [(p, b"new") for p in sorted(pair)])),
@@ -387,7 +389,12 @@ class DraftPublisher(unittest.TestCase):
 
 
     def test_queued_duplicate_branch_cannot_create_second_pr(self):
-        (self.root / "README.md").write_text("Changed\n")
+        target = self.root / "test/event-moves.test.mjs"
+        target.parent.mkdir()
+        target.write_text("const original = true;\n")
+        self.git("add", "."); self.git("commit", "-qm", "Tracked task fixture")
+        self.sha = self.git("rev-parse", "HEAD").strip()
+        target.write_text("const updated = true;\n")
         refs = []
         outcomes = []
         for existing in (False, True):
@@ -412,7 +419,7 @@ class DraftPublisher(unittest.TestCase):
                 if endpoint == "/pulls":
                     return {"draft": True, "number": 600}
                 self.fail("Unexpected remote operation")
-            with patch.dict(os.environ, {"WORKER_ISSUE_NUMBER": "550"}):
+            with patch.dict(os.environ, {"WORKER_ISSUE_NUMBER": "550", "WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]', "WORKER_DISPATCH_SCOPE": '["test/event-moves.test.mjs"]'}):
                 if existing:
                     with self.assertRaises(publisher.PublishError):
                         publisher.publish(self.root, "dummy", request)

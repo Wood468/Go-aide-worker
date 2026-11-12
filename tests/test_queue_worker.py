@@ -1636,7 +1636,8 @@ class WorkerQueueTests(unittest.TestCase):
             def install(signum, callback):
                 self.assertEqual(signum, signal.SIGTERM)
                 handler.append(callback)
-            def once(*, unattended):
+            def once(*, unattended, allowlist):
+                self.assertEqual(allowlist, ["test/event-moves.test.mjs"])
                 self.assertTrue(unattended)
                 seen.append(("once",))
                 return 0
@@ -1645,6 +1646,7 @@ class WorkerQueueTests(unittest.TestCase):
                   patch.object(q.signal, "signal", side_effect=install),
                   patch.object(q, "once", side_effect=once),
                   patch.object(sys, "argv", ["queue_worker.py", "loop"]),
+                  patch.dict(os.environ, {"WORKER_FILE_ALLOWLIST": '["test/event-moves.test.mjs"]'}),
                   patch("sys.stdout", new_callable=StringIO) as output):
                 q.main()
             self.assertEqual(seen, [("once",), ("wait", 600)])

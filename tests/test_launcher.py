@@ -171,7 +171,7 @@ class OptionsBridge(unittest.TestCase):
             launcher.read_options(self.path)
 
     def test_queue_execution_requires_three_optins_and_both_secrets(self):
-        common = {"job_action":"queue_loop", "job_prompt":"", "enable_queue":True,
+        common = {"job_action":"queue_loop", "job_prompt":"", "edit_files":"test/event-moves.test.mjs", "enable_queue":True,
                   "enable_edits":True, "enable_publishing":True,
                   "gemini_api_key":"dummy-gemini", "github_token":"dummy-github"}
         for changed in ({"enable_queue":False}, {"enable_edits":False},

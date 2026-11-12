@@ -9,6 +9,7 @@ import os
 import re
 from pathlib import Path
 import sys
+import queue_scope
 
 OPTIONS = Path("/data/options.json")
 WORKSPACE = Path("/data/workspace")
@@ -50,8 +51,13 @@ def read_options(path=OPTIONS):
                 or any(x.startswith(".") or x in {"", ".", ".."} for x in path.split("/"))
                 or any("token" in x.lower() or "secret" in x.lower() for x in path.split("/"))):
             raise ConfigurationError("Unsafe edit file path")
-    if action not in {"edit", "direct_edit"} and selected:
+    if action not in {"edit", "direct_edit", "queue_once", "queue_loop"} and selected:
         raise ConfigurationError("File selection is only available for edit jobs")
+    if action in {"queue_once", "queue_loop"}:
+        try:
+            queue_scope.validate(selected, unattended=(action == "queue_loop"))
+        except queue_scope.ScopeError:
+            raise ConfigurationError("Queue requires an explicit safe file allowlist") from None
     if not isinstance(enabled, bool) or not isinstance(publish_enabled, bool) or not isinstance(queue_enabled, bool):
         raise ConfigurationError("Enable flags must be boolean")
     if not isinstance(api_key, str) or not isinstance(github_token, str):
@@ -149,6 +155,7 @@ def main():
         environment["GEMINI_API_KEY"] = api_key
         environment["GITHUB_TOKEN"] = github_token
         environment["ENABLE_QUEUE"] = "true"
+        environment["WORKER_FILE_ALLOWLIST"] = json.dumps(edit_files.split(","))
     if action in {"publish", "publish_test"}:
         environment["ENABLE_PUBLISHING"] = "true"
         environment["GITHUB_TOKEN"] = github_token
