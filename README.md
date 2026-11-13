@@ -8,6 +8,12 @@ For independent overnight coordination and the existing Codex fallback, see
 [the result handoff runbook](docs/coordinator-result-handoff.md). The coordinator
 must prove result retrieval before allocating work; a queued job is not completion.
 
+For project-agent task preparation, coordinator dispatch and independent acceptance,
+see [Agent delegation v1](docs/AGENT_DELEGATION.md), tracked by
+[milestone 1](https://github.com/Wood468/Go-aide-worker/milestone/1) and
+[issue #68](https://github.com/Wood468/Go-aide-worker/issues/68). The clean-run
+pilot starts at 0/3; draft publication alone is not acceptance.
+
 ## v0.5.36: reject impossible regression inputs before source editing
 
 V4 dispatch checks the existing test against the 40,000-byte combined context
