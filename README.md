@@ -14,6 +14,19 @@ see [Agent delegation v1](docs/AGENT_DELEGATION.md), tracked by
 [issue #68](https://github.com/Wood468/Go-aide-worker/issues/68). The clean-run
 pilot starts at 0/3; draft publication alone is not acceptance.
 
+## v0.5.39: keep ancestry evidence within the audit response cap
+
+The first installed v0.5.38 no-retry disposition stopped safely because the
+merge-to-main comparison included unrelated main-file patches beyond the
+180,000-byte audit cap. No failed task was replayed or retired.
+
+The predecessor proof now requests one commit on comparison page two. GitHub
+retains the base, merge-base, comparison status and behind count on that page,
+while its unrelated changed-file inventory is confined to page one. The same
+strict ancestry checks and response cap remain. The separate complete PR and
+worker-branch path audits are unchanged; no evidence is truncated and treated
+as passing. Oversized or missing ancestry metadata still stops disposition.
+
 ## v0.5.38: prove a reviewed failure's previously merged baseline
 
 A banked issue can predate an unrelated worker result on the same files. The
