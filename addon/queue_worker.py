@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """GitHub-approved bounded task queue. No arbitrary scripts, merges or deployments."""
 import fcntl
+import base64
 import hashlib
 import json
 import os
@@ -133,10 +134,16 @@ def github_read(url, opener=urllib.request.urlopen):
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(url, headers=headers)
+    # Only exact immutable reviewed-source reads need base64 headroom for the
+    # 250 KB source cap. Every ordinary queue response keeps its 180 KB cap.
+    sources = {pair[0] for pair in SOURCE_TEST_PAIRS | queue_scope.SECTION_SOURCE_TEST_PAIRS}
+    source_url = re.fullmatch(re.escape('https://api.github.com/repos/' + REPO + '/contents/')
+                              + r'([^?]+)\?ref=[a-f0-9]{40}', url)
+    response_limit = 360_000 if source_url and source_url[1] in sources else 180_000
     try:
         with opener(req, timeout=25) as response:
-            raw = response.read(180_001)
-        if len(raw) > 180_000:
+            raw = response.read(response_limit + 1)
+        if len(raw) > response_limit:
             raise QueueError("Queue response exceeds limit")
         return json.loads(raw)
     except urllib.error.HTTPError as exc:
@@ -1016,9 +1023,104 @@ def retire_failed_max_anchor_task(path=LEDGER, fetch=github_read):
         "Max source-anchor task #594 safely retired without retry or PR")
 
 
+def verify_merged_baseline(pr, state, task, fetch):
+    """Prove an overlapping prior result is already the failed task's baseline.
+
+    The entire PR head/merge trees must match. This deliberately excludes
+    conflict-resolution merges, changed refs and partially reconciled branches.
+    Nothing here grants a retry or retires an unreviewed failure.
+    """
+    import section_editor
+    error = 'Overlapping predecessor baseline unverified'
+    def require(condition):
+        if not condition:
+            raise QueueError(error)
+    sha = lambda value: isinstance(value, str) and re.fullmatch('[a-f0-9]{40}', value)
+    require(isinstance(pr, dict) and type(pr.get('number')) is int)
+    number = pr['number']
+    detail = fetch('https://api.github.com/repos/' + REPO + '/pulls/' + str(number))
+    require(isinstance(detail, dict) and detail.get('number') == number
+            and detail.get('state') == pr.get('state') == 'closed' and detail.get('merged') is True
+            and isinstance(detail.get('merged_at'), str)
+            and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', detail['merged_at'])
+            and detail['merged_at'] == pr.get('merged_at')
+            and sha(detail.get('merge_commit_sha'))
+            and detail['merge_commit_sha'] == pr.get('merge_commit_sha'))
+    head, base = detail.get('head'), detail.get('base')
+    require(isinstance(head, dict) and isinstance(base, dict)
+            and isinstance(head.get('repo'), dict) and head['repo'].get('full_name') == REPO
+            and isinstance(base.get('repo'), dict) and base['repo'].get('full_name') == REPO
+            and base.get('ref') == 'main' and sha(head.get('sha'))
+            and isinstance(head.get('ref'), str) and re.fullmatch(r'worker/review-[a-f0-9]{12}', head['ref'])
+            and isinstance(pr.get('head'), dict) and pr['head'].get('sha') == head['sha']
+            and pr['head'].get('ref') == head['ref'])
+    body = detail.get('body')
+    links = re.findall(r'^Source task: #([1-9][0-9]{0,9})$', body, re.MULTILINE) if isinstance(body, str) else []
+    require(len(links) == 1)
+    prior_issue = int(links[0])
+    prior = state.get(str(prior_issue))
+    require(prior_issue != task['issue'] and isinstance(prior, dict)
+            and prior.get('state') == 'submitted' and prior.get('pr') == number
+            and isinstance(prior.get('task_sha256'), str)
+            and re.fullmatch('[a-f0-9]{64}', prior['task_sha256']))
+    issue = fetch('https://api.github.com/repos/' + REPO + '/issues/' + str(prior_issue))
+    require(isinstance(issue, dict) and issue.get('number') == prior_issue and issue.get('state') == 'closed')
+    # Local validation accepts the historical CLOSED task without reopening it.
+    previous_task = parse_task(dict(issue, state='open'), require_approval=False)
+    require(previous_task and previous_task.get('version') == 4
+            and previous_task['paths'] == task['paths']
+            and task_fingerprint(previous_task) == prior['task_sha256'])
+    files = set()
+    complete = False
+    for page in range(1, 11):
+        changed = fetch('https://api.github.com/repos/' + REPO + '/pulls/' + str(number)
+                        + '/files?per_page=100&page=' + str(page))
+        require(isinstance(changed, list) and len(changed) <= 100)
+        for item in changed:
+            name = item.get('filename') if isinstance(item, dict) else None
+            require(isinstance(name, str) and name not in files)
+            files.add(name)
+        if len(changed) < 100:
+            complete = True
+            break
+    require(complete and files == set(task['paths']) and type(detail.get('changed_files')) is int
+            and detail['changed_files'] == len(files))
+    trees = []
+    for commit in (head['sha'], detail['merge_commit_sha']):
+        obj = fetch('https://api.github.com/repos/' + REPO + '/git/commits/' + commit)
+        require(isinstance(obj, dict) and obj.get('sha') == commit
+                and isinstance(obj.get('tree'), dict) and sha(obj['tree'].get('sha')))
+        trees.append(obj['tree']['sha'])
+    require(trees[0] == trees[1])
+    merged = detail['merge_commit_sha']
+    comparison = fetch('https://api.github.com/repos/' + REPO + '/compare/' + merged + '...main')
+    require(isinstance(comparison, dict) and comparison.get('status') in {'ahead', 'identical'}
+            and type(comparison.get('behind_by')) is int and comparison['behind_by'] == 0
+            and isinstance(comparison.get('base_commit'), dict) and comparison['base_commit'].get('sha') == merged
+            and isinstance(comparison.get('merge_base_commit'), dict)
+            and comparison['merge_base_commit'].get('sha') == merged)
+    source_path = task['paths'][0]
+    obj = fetch('https://api.github.com/repos/' + REPO + '/contents/' + source_path + '?ref=' + merged)
+    require(isinstance(obj, dict) and obj.get('type') == 'file' and obj.get('path') == source_path
+            and obj.get('encoding') == 'base64' and type(obj.get('size')) is int
+            and 1 <= obj['size'] <= section_editor.MAX_SOURCE_BYTES and sha(obj.get('sha'))
+            and isinstance(obj.get('content'), str) and len(obj['content']) <= 350_000)
+    try:
+        raw = base64.b64decode(obj['content'].replace('\n', ''), validate=True)
+        raw.decode('utf-8')
+        require(len(raw) == obj['size'] and hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == obj['sha']
+                and hashlib.sha256(raw).hexdigest() == task['section']['sha256'])
+        section_editor.locate(raw, section_editor.task_contract(task['section'], source_path))
+    except (ValueError, UnicodeError, TypeError):
+        raise QueueError(error) from None
+    return {'issue': prior_issue, 'pr': number, 'head_sha': head['sha'], 'branch': head['ref'],
+            'merge_sha': merged, 'task_sha256': prior['task_sha256'],
+            'source_sha256': task['section']['sha256']}
+
+
 def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
                                   expected_failure, owned_paths, reason, message,
-                                  required_review_label=None, retired_details=None):
+                                  required_review_label=None, retired_details=None, baseline_task=None):
     """Shared no-publication audit for fixed or explicitly reviewed retirements.
 
     This action is deliberately NOT a generic retry/reset. It has no
@@ -1065,6 +1167,7 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
     # Follow all PR pages since the original issue, including CLOSED drafts.
     # Check both explicit task linkage and branch/file content for any worker
     # PR with erased task references. Unknown metadata fails closed.
+    verified_predecessors = {}
     pr_history_complete = False
     last_created = None
     seen_prs = set()
@@ -1114,13 +1217,18 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
                         if filename in seen_paths:
                             raise QueueError("Worker PR file history repeated")
                         seen_paths.add(filename)
-                        if filename in owned_paths:
+                        if filename in owned_paths and baseline_task is None:
                             raise QueueError("Potential rotation worker PR already exists")
                     if len(changed) < 100:
                         files_complete = True
                         break
                 if not files_complete:
                     raise QueueError("Worker PR file pagination incomplete")
+                if seen_paths & owned_paths and baseline_task is not None:
+                    predecessor = verify_merged_baseline(pr, state, baseline_task, fetch)
+                    if predecessor['branch'] in verified_predecessors:
+                        raise QueueError('Repeated predecessor branch')
+                    verified_predecessors[predecessor['branch']] = predecessor
         if pr_history_complete or len(prs) < 5:
             pr_history_complete = True
             break
@@ -1183,14 +1291,18 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
                     or not isinstance(commits[-1], dict)
                     or commits[-1].get("sha") != sha):
                 raise QueueError("Worker branch comparison incomplete")
+            predecessor = verified_predecessors.get(name)
+            known_baseline = predecessor is not None and predecessor['head_sha'] == sha
             seen_paths = set()
             for item in files:
                 filename = item.get("filename") if isinstance(item, dict) else None
                 if not isinstance(filename, str) or filename in seen_paths:
                     raise QueueError("Worker branch changed files invalid")
                 seen_paths.add(filename)
-                if filename in owned_paths:
+                if filename in owned_paths and not known_baseline:
                     raise QueueError("Ambiguous existing rotation worker branch")
+            if known_baseline and seen_paths != owned_paths:
+                raise QueueError('Predecessor branch scope changed')
         if len(branches) < 100:
             branch_history_complete = True
             break
@@ -1201,6 +1313,8 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
     state[str(number)] = {"state": "retired", "attempts": 1, "reason": reason}
     if retired_details:
         state[str(number)].update(retired_details)
+    if verified_predecessors:
+        state[str(number)]['prior_merged_baselines'] = sorted(verified_predecessors.values(), key=lambda item: item['pr'])
     save_ledger(state, path)
     print(message, flush=True)
     return True
@@ -1317,6 +1431,7 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
         contract, record, owned, reason,
         'Reviewed prewrite task #' + str(receipt['issue']) + ' isolated without retry or PR',
         required_review_label=REVIEW_LABEL,
+        baseline_task=task if source_prewrite else None,
         retired_details={'task_sha256': receipt['task_sha256'], 'failure_stage': record['failure_stage'],
                          'failure_category': record.get('failure_category', 'syntax'),
                          **({'review_syntax': diagnostics} if diagnostics else {}),
