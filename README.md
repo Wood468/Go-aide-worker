@@ -14,6 +14,33 @@ see [Agent delegation v1](docs/AGENT_DELEGATION.md), tracked by
 [issue #68](https://github.com/Wood468/Go-aide-worker/issues/68). The clean-run
 pilot starts at 0/3; draft publication alone is not acceptance.
 
+## v0.5.38: prove a reviewed failure's previously merged baseline
+
+A banked issue can predate an unrelated worker result on the same files. The
+old reviewed-retirement audit conservatively treated that earlier result as a
+possible publication of the failed task. For reviewed v4 **source-prewrite**
+failures only, retirement can now recognize a proven predecessor without
+skipping either the complete PR history or branch comparisons.
+
+The predecessor must be a different closed owner-authored task whose immutable
+fingerprint and PR match an existing submitted ledger row. Its merged PR must
+have the exact same reviewed paths and belong to this repository's `main`.
+Its entire head and merge Git trees must be identical, and its merge must still
+be an ancestor of current main. The immutable source blob must pass Git blob
+SHA, UTF-8, size, approved SHA-256 and unique-anchor checks against the failed
+task's baseline. A remaining branch must match that exact PR ref/head and pass
+the complete branch comparison with exactly the same paths. Unknown proposals,
+changed refs, conflict-resolution trees or incomplete evidence still block.
+
+The retired row preserves its original attempt, failure stage/category and task
+fingerprint, plus the verified predecessor identifiers/hashes. This remains an
+explicitly reviewed one-way disposition: it grants no replay, new approval,
+source edit, publication, merge or deployment. Historical format subtypes remain
+unknown. Existing test/publish/syntax failure rules and fixed retirements retain
+their previous behavior. Only exact immutable reviewed-source contents reads
+receive a 360,000-byte JSON envelope cap for the 250,000-byte source; ordinary
+queue responses keep their 180,000-byte cap.
+
 ## v0.5.37: bounded prewrite response correction
 
 Approved v4 source and related-test children can each request **one** correction
