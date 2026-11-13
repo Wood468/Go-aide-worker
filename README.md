@@ -33,6 +33,10 @@ review, draft-only publication, immutable approval checks, needs-review holds
 and per-commit coordinator integration remain required. No failure is replayed
 or skipped and no new source family or automatic merge authority is granted.
 
+## v0.5.34: reviewed source-anchor rejection isolation
+
+The existing credential-free review action also accepts a one-attempt v4 `edit-source/anchor` failure. These exact replacement-match/overlap rejections occur before the editor's atomic write. Stored full task fingerprint, complete ordered scope, withdrawn approvals, separate review label and complete remote PR/branch audit remain mandatory. Retirement is one-way, retains the original failure and other ledger rows, and never retries a task. Test-stage/publish-stage, unknown, repeated-attempt and missing-hash cases remain blocked. No editing, publishing, credentials, queue-family or merge authority is added.
+
 ## v0.5.33: autonomous bounded large-file queue
 
 The new `queue_large_file_loop` action polls approved version-4 section tasks every ten minutes. It runs the existing large-file editor, related regression edit, credential-free syntax checks, deterministic cache synchronization and independent draft publisher without a separate Queue Once invocation for each task. The existing `queue_loop` remains test-only.

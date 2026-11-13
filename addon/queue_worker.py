@@ -1254,14 +1254,14 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
     required = {'state', 'attempts', 'failure_stage', 'failure_category'}
     source_syntax = (isinstance(record, dict) and set(record) == {'state', 'attempts', 'failure_stage', 'task_sha256'}
                      and record.get('failure_stage') == 'syntax-check')
-    source_format = (isinstance(record, dict) and record.get('failure_stage') == 'edit-source'
-                     and record.get('failure_category') == 'format')
+    source_prewrite = (isinstance(record, dict) and record.get('failure_stage') == 'edit-source'
+                     and record.get('failure_category') in {'format', 'anchor'})
     service = (isinstance(record, dict) and record.get('failure_stage') == 'edit-single'
                and record.get('failure_category') in {'service', 'service-500', 'service-502', 'service-503', 'service-504'})
     if (not isinstance(record, dict) or (set(record) not in (required, required | {'task_sha256'}) and not source_syntax)
             or record.get('state') != 'needs-review' or type(record.get('attempts')) is not int
-            or record['attempts'] != 1 or not (source_format or source_syntax or service)
-            or ('task_sha256' not in record and ((source_format or source_syntax) or LEGACY_SERVICE_REVIEW.get(receipt['issue']) != receipt['task_sha256']))
+            or record['attempts'] != 1 or not (source_prewrite or source_syntax or service)
+            or ('task_sha256' not in record and ((source_prewrite or source_syntax) or LEGACY_SERVICE_REVIEW.get(receipt['issue']) != receipt['task_sha256']))
             or ('task_sha256' in record and record['task_sha256'] != receipt['task_sha256'])):
         raise QueueError('Failure not eligible for reviewed isolation')
     issue = fetch('https://api.github.com/repos/' + REPO + '/issues/' + str(receipt['issue']))
@@ -1269,12 +1269,12 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
     if not task or task_fingerprint(task) != receipt['task_sha256']:
         raise QueueError('Reviewed failure contract changed')
     diagnostics = None
-    if source_format or source_syntax:
+    if source_prewrite or source_syntax:
         if task.get('version') != 4 or task['paths'][0] != receipt['path'] or allowed != task['paths']:
             raise QueueError('Failure review scope mismatch')
         owned = set(task['paths'])
         contract = {k: v for k, v in task.items() if k != 'issue'}
-        reason = 'operator-reviewed-source-format-no-retry'
+        reason = 'operator-reviewed-source-' + record.get('failure_category', 'syntax') + '-no-retry'
         if source_syntax:
             diagnostics = diagnose_section_syntax(CHECKOUT, task)
             reason = 'operator-reviewed-syntax-no-retry'
