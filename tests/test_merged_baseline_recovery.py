@@ -1,6 +1,7 @@
 """Read-only predecessor proof must preserve failed-task ownership and audit."""
 import base64
 import copy
+from datetime import datetime, timedelta
 import hashlib
 from io import BytesIO
 import json
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'addon'))
 import queue_worker as q
@@ -58,6 +60,7 @@ class MergedBaselineRecovery(unittest.TestCase):
         self.comparison = {'status': 'ahead', 'total_commits': 1, 'ahead_by': 1,
                            'commits': [{'sha': self.head}], 'files': copy.deepcopy(self.files)}
         self.calls = []
+        self.history_pages = None
 
     def task_for(self, issue, source_hash, instruction):
         return {'issue': issue, 'version': 4, 'paths': list(self.paths), 'instruction': instruction,
@@ -88,7 +91,10 @@ class MergedBaselineRecovery(unittest.TestCase):
         if url == root + '/git/commits/' + self.merge:
             return {'sha': self.merge, 'tree': {'sha': self.merge_tree}}
         if url == self.ancestry_url: return copy.deepcopy(self.ancestry)
-        if '/pulls?state=all' in url: return [copy.deepcopy(self.pr)]
+        if '/pulls?state=all' in url:
+            if self.history_pages is None: return [copy.deepcopy(self.pr)]
+            page = int(parse_qs(urlsplit(url).query)['page'][0])
+            return copy.deepcopy(self.history_pages.get(page))
         if url == root + '/pulls/698/files?per_page=100&page=1': return copy.deepcopy(self.files)
         if url == root + '/branches?per_page=100&page=1': return copy.deepcopy(self.branches)
         if url.startswith(root + '/commits/'):
@@ -351,6 +357,110 @@ class MergedBaselineRecovery(unittest.TestCase):
             with self.subTest(stage=stage):
                 self.state['700'] = {**baseline, 'failure_stage': stage}
                 self.retire(failure=True)
+
+    def paged_history(self, postissue=17):
+        newest = datetime(2026, 11, 12, 8, 59, 59)
+        newer = [{'number': 900 + i, 'state': 'closed',
+                  'created_at': (newest - timedelta(seconds=i)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                  'title': 'Unrelated reviewed proposal', 'body': '',
+                  'head': {'ref': 'feature/unrelated-' + str(i)}} for i in range(postissue - 1)]
+        older = {'number': 680, 'state': 'closed', 'created_at': '2026-11-12T06:59:00Z',
+                 'title': 'Older proposal', 'body': '', 'head': {'ref': 'feature/older'}}
+        rows = newer + [copy.deepcopy(self.pr), older]
+        return {page + 1: rows[offset:offset + 8] for page, offset in enumerate(range(0, len(rows), 8))}
+
+    def history_requests(self):
+        return [url for url in self.calls if '/pulls?state=all' in url]
+
+    def test_eight_row_pages_continue_through_seventeen_postissue_prs_and_keep_predecessor_proof(self):
+        self.history_pages = self.paged_history()
+        after = self.retire()
+        self.assertEqual(after['700']['prior_merged_baselines'], [self.expected_receipt()])
+        self.assertEqual(after['699'], self.state['699'])
+        requests = self.history_requests()
+        self.assertEqual(len(requests), 3)
+        self.assertEqual([parse_qs(urlsplit(url).query)['page'] for url in requests], [['1'], ['2'], ['3']])
+        self.assertTrue(all(parse_qs(urlsplit(url).query)['per_page'] == ['8'] for url in requests))
+        # No synthetic empty fourth page is needed after the older boundary.
+        self.assertEqual(len(self.history_pages[1]), 8)
+        self.assertEqual(len(self.history_pages[2]), 8)
+
+    def test_second_page_unknown_or_unmerged_overlapping_worker_pr_blocks_without_ledger_change(self):
+        detail = copy.deepcopy(self.detail)
+        for kind in ('unknown-task', 'unmerged'):
+            with self.subTest(kind=kind):
+                self.calls = []
+                self.history_pages = self.paged_history()
+                suspicious = copy.deepcopy(self.pr)
+                suspicious['created_at'] = self.history_pages[2][0]['created_at']
+                self.history_pages[2][0] = suspicious
+                self.history_pages[3][0] = {'number': 950, 'state': 'closed',
+                    'created_at': '2026-11-12T08:29:00Z', 'title': 'Unrelated older proposal',
+                    'body': '', 'head': {'ref': 'feature/older-postissue'}}
+                self.detail = copy.deepcopy(detail)
+                if kind == 'unknown-task':
+                    suspicious['body'] = self.detail['body'] = 'Source task: #695'
+                else:
+                    self.detail['merged'] = False
+                self.retire(failure=True)
+                self.assertEqual(len(self.history_requests()), 2)
+        self.detail = detail
+
+    def test_135_postissue_prs_find_predecessor_after_old_horizon_and_stop_at_older_boundary(self):
+        self.history_pages = self.paged_history(135)
+        self.assertEqual(self.history_pages[17][-2]['number'], self.pr['number'])
+        self.assertLess(self.history_pages[17][-1]['created_at'], self.created)
+        after = self.retire()
+        self.assertEqual(after['700']['prior_merged_baselines'], [self.expected_receipt()])
+        requests = self.history_requests()
+        self.assertEqual(len(requests), 17)
+        self.assertEqual([int(parse_qs(urlsplit(url).query)['page'][0]) for url in requests],
+                         list(range(1, 18)))
+        self.assertTrue(all(parse_qs(urlsplit(url).query)['per_page'] == ['8'] for url in requests))
+        self.assertEqual(len(self.history_pages[17]), 8)
+
+    def test_twenty_five_full_eight_row_pages_without_cutoff_block_without_ledger_change(self):
+        self.history_pages = self.paged_history(200)
+        self.assertTrue(all(len(self.history_pages[page]) == 8 for page in range(1, 26)))
+        self.assertTrue(all(row['created_at'] >= self.created
+                            for page in range(1, 26) for row in self.history_pages[page]))
+        # An older boundary exists on page 26, which exceeds the audit budget.
+        # It must never turn the first 200 rows into a silently complete audit.
+        self.assertLess(self.history_pages[26][0]['created_at'], self.created)
+        self.retire(failure=True)
+        requests = self.history_requests()
+        self.assertEqual(len(requests), 25)
+        self.assertEqual([int(parse_qs(urlsplit(url).query)['page'][0]) for url in requests],
+                         list(range(1, 26)))
+
+    def test_missing_gapped_duplicate_out_of_order_and_oversized_history_pages_fail_closed(self):
+        mutations = ('missing-page', 'empty-history-with-unreconciled-worker-branch', 'missing-number', 'missing-timestamp',
+                     'duplicate-pr', 'out-of-order', 'nine-rows')
+        for kind in mutations:
+            with self.subTest(kind=kind):
+                self.calls = []
+                self.history_pages = self.paged_history()
+                if kind == 'missing-page': del self.history_pages[2]
+                elif kind == 'empty-history-with-unreconciled-worker-branch': self.history_pages[2] = []
+                elif kind == 'missing-number': self.history_pages[2][0].pop('number')
+                elif kind == 'missing-timestamp': self.history_pages[2][0].pop('created_at')
+                elif kind == 'duplicate-pr': self.history_pages[2][0] = copy.deepcopy(self.history_pages[1][-1])
+                elif kind == 'out-of-order': self.history_pages[2][0]['created_at'] = '2026-11-12T12:00:00Z'
+                elif kind == 'nine-rows': self.history_pages[1].append(copy.deepcopy(self.history_pages[2][0]))
+                self.retire(failure=True)
+
+    def test_legacy_retirement_helper_keeps_five_row_history_pages(self):
+        q.save_ledger(copy.deepcopy(self.state), self.ledger)
+        self.history_pages = {1: []}
+        self.branches = []
+        self.assertTrue(q._retire_reviewed_edit_failure(
+            self.ledger, self.fetch, 700, self.issue['title'],
+            {key: value for key, value in self.task.items() if key != 'issue'},
+            self.state['700'], set(self.paths), 'legacy-reviewed-no-retry',
+            'Legacy reviewed fixture retired', required_review_label=q.REVIEW_LABEL))
+        requests = self.history_requests()
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(parse_qs(urlsplit(requests[0]).query)['per_page'], ['5'])
 
 
 class MergedBaselineReadLimits(unittest.TestCase):
