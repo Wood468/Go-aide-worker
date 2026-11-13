@@ -433,7 +433,7 @@ class MergedBaselineRecovery(unittest.TestCase):
         self.assertEqual([int(parse_qs(urlsplit(url).query)['page'][0]) for url in requests],
                          list(range(1, 26)))
 
-    def test_missing_gapped_duplicate_out_of_order_and_oversized_history_pages_fail_closed(self):
+    def test_malformed_history_and_unreconciled_worker_branches_fail_closed(self):
         mutations = ('missing-page', 'empty-history-with-unreconciled-worker-branch', 'missing-number', 'missing-timestamp',
                      'duplicate-pr', 'out-of-order', 'nine-rows')
         for kind in mutations:
@@ -441,7 +441,10 @@ class MergedBaselineRecovery(unittest.TestCase):
                 self.calls = []
                 self.history_pages = self.paged_history()
                 if kind == 'missing-page': del self.history_pages[2]
-                elif kind == 'empty-history-with-unreconciled-worker-branch': self.history_pages[2] = []
+                elif kind == 'empty-history-with-unreconciled-worker-branch':
+                    # An empty API page is an inventory end, not a numeric gap.
+                    # The still-unreconciled worker branch must independently block.
+                    self.history_pages[2] = []
                 elif kind == 'missing-number': self.history_pages[2][0].pop('number')
                 elif kind == 'missing-timestamp': self.history_pages[2][0].pop('created_at')
                 elif kind == 'duplicate-pr': self.history_pages[2][0] = copy.deepcopy(self.history_pages[1][-1])
