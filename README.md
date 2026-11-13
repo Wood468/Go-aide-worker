@@ -8,6 +8,31 @@ For independent overnight coordination and the existing Codex fallback, see
 [the result handoff runbook](docs/coordinator-result-handoff.md). The coordinator
 must prove result retrieval before allocating work; a queued job is not completion.
 
+## v0.5.34: bind related regression generation to the edited source
+
+Version-4 test generation now receives the actual updated, approved source
+section as read-only reference data. This addresses the live pilot where a
+correct dashboard source edit was followed by a regression aimed at a different
+source file. The queue passes the complete immutable task and captured task
+fingerprint to the related-test child, which independently checks the exact
+source/test/cache bundle, selected test path and unchanged instruction. Two
+supported source files can share a test file; pair membership alone is not task
+identity.
+
+The editor reads a credential-free Git HEAD baseline, verifies the original
+source hash and unchanged bytes outside the approved section, and supplies only
+the updated section, never the large file's unrelated prefix or suffix. Only
+the selected test remains editable. Existing test text plus encoded read-only
+source reference must fit within 40,000 UTF-8 bytes; oversized or unsafe context
+fails before the provider request. The source-edit stage, manual edits and
+legacy/v2/v3 tasks retain their previous behavior.
+
+This grounds the model request; it does not prove arbitrary generated tests are
+correct. HA still performs syntax checks only. Cloud/GitHub tests, independent
+review, draft-only publication, immutable approval checks, needs-review holds
+and per-commit coordinator integration remain required. No failure is replayed
+or skipped and no new source family or automatic merge authority is granted.
+
 ## v0.5.33: autonomous bounded large-file queue
 
 The new `queue_large_file_loop` action polls approved version-4 section tasks every ten minutes. It runs the existing large-file editor, related regression edit, credential-free syntax checks, deterministic cache synchronization and independent draft publisher without a separate Queue Once invocation for each task. The existing `queue_loop` remains test-only.

@@ -135,3 +135,39 @@ def propose_task(key, expected_path, original, contract, generator=generate):
 def verify_task(original, updated, contract, expected_path):
     """Independent publication-side byte check; never invokes the generator."""
     return verify(original, updated, task_contract(contract, expected_path))
+
+
+def validate_test_pair(source_path, test_path):
+    """Bind reference reads to an existing reviewed source/test pair."""
+    from queue_scope import SOURCE_TEST_PAIRS, SECTION_SOURCE_TEST_PAIRS
+    if (not isinstance(source_path, str) or not isinstance(test_path, str)
+            or (source_path, test_path) not in SOURCE_TEST_PAIRS | SECTION_SOURCE_TEST_PAIRS):
+        raise SectionEditError('Invalid regression source pair')
+
+
+def validate_test_context(context, test_path):
+    """Validate bounded reference data for the exact reviewed source/test pair."""
+    if (not isinstance(context, dict) or set(context) != {'path', 'content'}
+            or not isinstance(context['content'], str)):
+        raise SectionEditError('Invalid regression source context')
+    validate_test_pair(context['path'], test_path)
+    try:
+        raw = context['content'].encode('utf-8')
+    except UnicodeError:
+        raise SectionEditError('Invalid regression source context') from None
+    if (not raw.strip() or len(raw) > MAX_SECTION_BYTES or unsafe_controls(raw)
+            or any(marker in raw for marker in SECRET_MARKERS)):
+        raise SectionEditError('Unsafe regression source context')
+    return context
+
+
+def test_context(original, updated, contract, test_path):
+    """Expose only the verified updated section, never the rest of a large file."""
+    source_path = contract.get('path') if isinstance(contract, dict) else None
+    bounds = task_contract(contract, source_path)
+    validate_test_pair(source_path, test_path)
+    verify(original, updated, bounds)
+    start, end = locate(original, bounds)
+    tail = len(original) - end
+    section = updated[start:len(updated) - tail if tail else len(updated)]
+    return validate_test_context({'path': source_path, 'content': section.decode('utf-8')}, test_path)
