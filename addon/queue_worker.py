@@ -1093,7 +1093,12 @@ def verify_merged_baseline(pr, state, task, fetch):
         trees.append(obj['tree']['sha'])
     require(trees[0] == trees[1])
     merged = detail['merge_commit_sha']
-    comparison = fetch('https://api.github.com/repos/' + REPO + '/compare/' + merged + '...main')
+    # GitHub includes the entire changed-file patch inventory on page ONE.
+    # We need only ancestry metadata here, not main's unrelated patches. Page
+    # two retains base/merge-base/status/behind metadata, even for zero/one
+    # commits, while bounding commit output and omitting the file inventory.
+    comparison = fetch('https://api.github.com/repos/' + REPO + '/compare/' + merged
+                       + '...main?per_page=1&page=2')
     require(isinstance(comparison, dict) and comparison.get('status') in {'ahead', 'identical'}
             and type(comparison.get('behind_by')) is int and comparison['behind_by'] == 0
             and isinstance(comparison.get('base_commit'), dict) and comparison['base_commit'].get('sha') == merged

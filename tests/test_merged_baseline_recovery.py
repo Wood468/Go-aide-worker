@@ -46,6 +46,8 @@ class MergedBaselineRecovery(unittest.TestCase):
         self.ancestry = {'base_commit': {'sha': self.merge}, 'merge_base_commit': {'sha': self.merge},
                          'behind_by': 0, 'ahead_by': 1, 'status': 'ahead', 'total_commits': 1,
                          'commits': [{'sha': 'f' * 40}]}
+        self.ancestry_url = ('https://api.github.com/repos/' + q.REPO + '/compare/' + self.merge
+                             + '...main?per_page=1&page=2')
         self.state = {'700': {'state': 'needs-review', 'attempts': 1, 'failure_stage': 'edit-source',
                               'failure_category': 'format', 'task_sha256': q.task_fingerprint(self.task)},
                       '699': {'state': 'submitted', 'pr': 698, 'attempts': 1,
@@ -85,7 +87,7 @@ class MergedBaselineRecovery(unittest.TestCase):
             return {'sha': self.head, 'tree': {'sha': self.head_tree}}
         if url == root + '/git/commits/' + self.merge:
             return {'sha': self.merge, 'tree': {'sha': self.merge_tree}}
-        if url == root + '/compare/' + self.merge + '...main': return copy.deepcopy(self.ancestry)
+        if url == self.ancestry_url: return copy.deepcopy(self.ancestry)
         if '/pulls?state=all' in url: return [copy.deepcopy(self.pr)]
         if url == root + '/pulls/698/files?per_page=100&page=1': return copy.deepcopy(self.files)
         if url == root + '/branches?per_page=100&page=1': return copy.deepcopy(self.branches)
@@ -160,6 +162,89 @@ class MergedBaselineRecovery(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.ancestry = {**copy.deepcopy(baseline), **mutation}
                 with self.assertRaises(q.QueueError): self.verify()
+
+    def ancestry_transport(self, responses):
+        """Use the real bounded reader for ancestry and normal proof fixtures elsewhere."""
+        requests, read_sizes = [], []
+
+        class Response(BytesIO):
+            def read(self, size):
+                read_sizes.append(size)
+                return super().read(size)
+
+        def opener(request, timeout):
+            self.assertEqual(timeout, 25)
+            requests.append(request.full_url)
+            self.assertIn(request.full_url, responses)
+            return Response(json.dumps(responses[request.full_url]).encode())
+
+        def fetch(url):
+            if '/compare/' + self.merge + '...main' in url:
+                return q.github_read(url, opener)
+            return self.fetch(url)
+
+        return fetch, opener, requests, read_sizes
+
+    def test_bounded_ancestry_page_proves_baseline_when_full_compare_exceeds_transport_cap(self):
+        unpaginated = self.ancestry_url.split('?')[0]
+        full = {**copy.deepcopy(self.ancestry), 'ahead_by': 56, 'total_commits': 56,
+                'commits': [{'sha': format(i, '040x'), 'commit': {'message': 'm' * 2000}}
+                            for i in range(56)],
+                'files': [{'filename': 'public/file-' + str(i) + '.js', 'patch': 'p' * 4000}
+                          for i in range(40)]}
+        selected = {**copy.deepcopy(self.ancestry), 'ahead_by': 56, 'total_commits': 56}
+        self.assertGreater(len(json.dumps(full).encode()), 180_000)
+        self.assertLess(len(json.dumps(selected).encode()), 180_000)
+        fetch, opener, requests, reads = self.ancestry_transport(
+            {unpaginated: full, self.ancestry_url: selected})
+        before = copy.deepcopy(self.state)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(q.QueueError, 'response exceeds limit'):
+                q.github_read(unpaginated, opener)
+            self.assertEqual(q.verify_merged_baseline(self.pr, self.state, self.task, fetch),
+                             self.expected_receipt())
+        self.assertEqual(requests, [unpaginated, self.ancestry_url])
+        self.assertEqual(reads, [180_001, 180_001])
+        self.assertEqual(self.state, before)
+        # Full predecessor file inventory keeps its separate normal pagination.
+        self.assertIn('https://api.github.com/repos/' + q.REPO +
+                      '/pulls/698/files?per_page=100&page=1', self.calls)
+
+    def test_selected_ancestry_page_remains_size_bounded_even_if_server_returns_extra_content(self):
+        oversized = {**copy.deepcopy(self.ancestry), 'files': [{'patch': 'p' * 180_001}]}
+        fetch, _, requests, reads = self.ancestry_transport({self.ancestry_url: oversized})
+        before = copy.deepcopy(self.state)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(q.QueueError, 'response exceeds limit'):
+                q.verify_merged_baseline(self.pr, self.state, self.task, fetch)
+        self.assertEqual(requests, [self.ancestry_url])
+        self.assertEqual(reads, [180_001])
+        self.assertEqual(self.state, before)
+
+    def test_bounded_page_still_requires_exact_ancestry_metadata_not_commit_or_file_payload(self):
+        invalid = [{}, None, {**self.ancestry, 'base_commit': {}},
+                   {**self.ancestry, 'merge_base_commit': {'sha': 'd' * 40}},
+                   {**self.ancestry, 'behind_by': 1}, {**self.ancestry, 'behind_by': '0'},
+                   {**self.ancestry, 'status': 'diverged'}]
+        before = copy.deepcopy(self.state)
+        for metadata in invalid:
+            with self.subTest(metadata=metadata):
+                fetch, _, requests, reads = self.ancestry_transport({self.ancestry_url: metadata})
+                with patch.dict(os.environ, {}, clear=True):
+                    with self.assertRaises(q.QueueError):
+                        q.verify_merged_baseline(self.pr, self.state, self.task, fetch)
+                self.assertEqual(requests, [self.ancestry_url])
+                self.assertEqual(reads, [180_001])
+                self.assertEqual(self.state, before)
+        # A later page may contain no commits for an identical comparison;
+        # immutable base/merge-base metadata remains sufficient evidence.
+        identical = {**self.ancestry, 'status': 'identical', 'ahead_by': 0,
+                     'total_commits': 0, 'commits': []}
+        fetch, _, requests, _ = self.ancestry_transport({self.ancestry_url: identical})
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(q.verify_merged_baseline(self.pr, self.state, self.task, fetch),
+                             self.expected_receipt())
+        self.assertEqual(requests, [self.ancestry_url])
 
     def test_pr_link_and_prior_submitted_ledger_must_identify_another_exact_owner_task(self):
         baseline_pr = copy.deepcopy(self.pr)
