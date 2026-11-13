@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'addon'))
 import queue_worker as q
 import queue_scope
 import launcher
+import edit_protocol
 
 PATH = 'test/event-moves.test.mjs'
 
@@ -70,6 +71,8 @@ class ReviewedServiceRecovery(unittest.TestCase):
                 self.assertEqual(after['700']['state'], 'retired')
                 self.assertEqual(after['700']['task_sha256'], self.digest)
                 self.assertEqual(after['700']['failure_category'], (record or self.record).get('failure_category', 'syntax'))
+                if 'model_corrections' in (record or self.record):
+                    self.assertEqual(after['700']['model_corrections'], (record or self.record)['model_corrections'])
                 self.assertFalse(q.approved_for_dispatch(self.task, after))
                 with self.assertRaises(q.QueueError):
                     q.isolate_reviewed_service_failure(self.ledger, fetch)
@@ -109,6 +112,33 @@ class ReviewedServiceRecovery(unittest.TestCase):
             self.audit_path = 'public/app.js'
             self.run_case(branch=True, failure=True)
             self.run_case(record={**self.record, 'failure_stage': 'publish'}, failure=True)
+
+    def test_reviewed_syntax_failure_preserves_ordered_correction_history_without_replay(self):
+        self.source_fixture()
+        baseline = {k: v for k, v in self.record.items() if k != 'failure_category'}
+        baseline['failure_stage'] = 'syntax-check'
+        source = {'stage': 'edit-source', 'category': 'anchor'}
+        test = {'stage': 'edit-test', 'category': 'format-json'}
+        diagnosis = {'source-baseline': 'pass', 'source-updated': 'pass',
+                     'test-baseline': 'pass', 'test-updated': 'duplicate-binding'}
+        for history in ([source], [test], [source, test]):
+            with self.subTest(history=history):
+                record = {**baseline, 'model_corrections': history}
+                with patch.object(q, 'diagnose_section_syntax', return_value=diagnosis) as diagnose:
+                    self.run_case(record=record)
+                    diagnose.assert_called_once()
+                retired = q.read_ledger(self.ledger)['700']
+                self.assertEqual(retired['model_corrections'], history)
+                self.assertEqual(retired['review_syntax'], diagnosis)
+                self.assertEqual(retired['attempts'], 1)
+                self.assertNotIn('pr', retired)
+        for history in (None, [], [test, source], [dict(source, raw_reply='private-content')]):
+            with self.subTest(invalid_history=history), \
+                 patch.object(q, 'diagnose_section_syntax') as diagnose:
+                self.run_case(record={**baseline, 'model_corrections': history}, failure=True)
+                diagnose.assert_not_called()
+        with patch.object(q, 'diagnose_section_syntax', side_effect=q.QueueError('unclassified')):
+            self.run_case(record={**baseline, 'model_corrections': [source, test]}, failure=True)
 
     def test_actual_recovery_cli_accepts_full_source_scope_but_loop_rejects_it(self):
         self.source_fixture()
@@ -155,6 +185,60 @@ class ReviewedServiceRecovery(unittest.TestCase):
         self.run_case(env={**self.env, 'WORKER_FILE_ALLOWLIST': json.dumps(paths[:1])}, failure=True)
         self.run_case(issue={**self.issue, 'labels': []}, failure=True)
         self.test_ha_recovery_child_has_no_provider_or_publishing_credentials()
+
+    def test_typed_source_prewrite_failure_retains_correction_history_after_one_way_retirement(self):
+        self.source_fixture()
+        for category in edit_protocol.CORRECTABLE:
+            with self.subTest(category=category):
+                history = [{'stage': 'edit-source', 'category': 'format-envelope'}]
+                record = {**self.record, 'failure_category': category, 'model_corrections': history}
+                calls = self.run_case(record=record)
+                self.assertTrue(any('/pulls?state=all' in url for url in calls))
+                self.assertTrue(any('/branches?' in url for url in calls))
+                retired = q.read_ledger(self.ledger)['700']
+                self.assertEqual(retired['attempts'], 1)
+                self.assertEqual(retired['failure_stage'], 'edit-source')
+                self.assertEqual(retired['model_corrections'], history)
+                self.assertNotIn('pr', retired)
+
+    def test_source_failure_with_correction_history_still_requires_owner_review_hash_and_full_audit(self):
+        paths = self.source_fixture()
+        record = {**self.record, 'failure_category': 'format-json',
+                  'model_corrections': [{'stage': 'edit-source', 'category': 'anchor'}]}
+        self.run_case(record=record, issue={**self.issue, 'labels': []}, failure=True)
+        self.run_case(record=record, env={**self.env,
+                      'WORKER_FILE_ALLOWLIST': json.dumps(paths[:1])}, failure=True)
+        self.run_case(record={**record, 'task_sha256': '0' * 64}, failure=True)
+        for path in paths:
+            with self.subTest(unpublished_branch_path=path):
+                self.audit_path = path
+                self.run_case(record=record, branch=True, failure=True)
+
+    def test_malformed_or_test_correction_history_never_relaxes_source_failure_isolation(self):
+        self.source_fixture()
+        source = {'stage': 'edit-source', 'category': 'anchor'}
+        test = {'stage': 'edit-test', 'category': 'format-json'}
+        histories = [None, [], 'not-a-history', {}, [test], [source, test], [source, source],
+                     [{**source, 'raw_reply': 'private-provider-content'}],
+                     [{'stage': 'edit-source', 'category': 'private-provider-content'}],
+                     [{'stage': 'edit-single', 'category': 'anchor'}]]
+        for history in histories:
+            with self.subTest(history=history):
+                self.run_case(record={**self.record, 'failure_category': 'format-json',
+                                      'model_corrections': history}, failure=True)
+
+    def test_correction_history_cannot_retire_nonprewrite_failures_or_unknown_extra_fields(self):
+        self.source_fixture()
+        record = {**self.record, 'failure_category': 'format-json',
+                  'model_corrections': [{'stage': 'edit-source', 'category': 'anchor'}]}
+        changes = [{'failure_stage': 'edit-test'}, {'failure_stage': 'publish'},
+                   {'failure_stage': 'syntax-check'}, {'failure_category': 'provider-block'},
+                   {'failure_category': 'output-limit'}, {'failure_category': 'unknown'},
+                   {'failure_category': 'auth'}, {'attempts': 2}, {'attempts': True},
+                   {'raw_reply': 'private-provider-content'}, {'pr': 701}]
+        for change in changes:
+            with self.subTest(change=change):
+                self.run_case(record={**record, **change}, failure=True)
 
     def test_one_reviewed_service_failure_is_retired_once_with_audit_preserved(self):
         self.run_case()
