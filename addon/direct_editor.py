@@ -295,6 +295,8 @@ def main():
             raise DirectEditError("Unexpected edit job")
         section = None
         test_source = None
+        if ('WORKER_TEST_SOURCE_TASK' in os.environ) != ('WORKER_TASK_SHA256' in os.environ):
+            raise DirectEditError('Regression source context validation failed')
         if 'WORKER_SECTION_CONTRACT' in os.environ and 'WORKER_TEST_SOURCE_TASK' in os.environ:
             raise DirectEditError('Conflicting section and regression contracts')
         if 'WORKER_SECTION_CONTRACT' in os.environ:

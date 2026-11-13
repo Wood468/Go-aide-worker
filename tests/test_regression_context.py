@@ -204,9 +204,13 @@ class RegressionSourceContext(unittest.TestCase):
     def test_main_rejects_manual_mixed_and_null_context_metadata_without_editing(self):
         job = self.root / 'job.json'
         job.write_text(json.dumps({'action': 'direct_edit', 'prompt': self.contract['instruction']}))
-        for env in ({'WORKER_TEST_SOURCE_TASK': json.dumps(self.task)},
-                    {'GO_WORKER_QUEUE_EDIT': '1', 'WORKER_TEST_SOURCE_TASK': 'null'},
-                    {'GO_WORKER_QUEUE_EDIT': '1', 'WORKER_TEST_SOURCE_TASK': json.dumps(self.task),
+        digest = queue.task_fingerprint(self.task)
+        metadata = {'WORKER_TEST_SOURCE_TASK': json.dumps(self.task), 'WORKER_TASK_SHA256': digest}
+        for env in (metadata,
+                    {'GO_WORKER_QUEUE_EDIT': '1', 'WORKER_TEST_SOURCE_TASK': json.dumps(self.task)},
+                    {'GO_WORKER_QUEUE_EDIT': '1', 'WORKER_TASK_SHA256': queue.task_fingerprint(self.task)},
+                    {'GO_WORKER_QUEUE_EDIT': '1', 'WORKER_TASK_SHA256': digest, 'WORKER_TEST_SOURCE_TASK': 'null'},
+                    {'GO_WORKER_QUEUE_EDIT': '1', **metadata,
                      'WORKER_SECTION_CONTRACT': json.dumps(self.contract)}):
             with self.subTest(env=env), patch.dict(os.environ, {'EDIT_FILES': self.test_path, **env}, clear=True), \
                  patch.object(editor.job_runner, 'WORKSPACE', self.root), \
@@ -214,6 +218,11 @@ class RegressionSourceContext(unittest.TestCase):
                  patch.object(editor, 'edit') as edit:
                 with self.assertRaises(SystemExit): editor.main()
                 edit.assert_not_called()
+        with patch.dict(os.environ, {'EDIT_FILES': self.test_path, 'GO_WORKER_QUEUE_EDIT': '1', **metadata}, clear=True), \
+             patch.object(editor.job_runner, 'WORKSPACE', self.root), \
+             patch.object(editor, 'selected_job_file', return_value=job), patch.object(editor, 'edit') as edit:
+            editor.main()
+            self.assertEqual(edit.call_args.kwargs, {'test_source_task': self.task, 'task_sha256': digest})
 
 
 if __name__ == '__main__': unittest.main()

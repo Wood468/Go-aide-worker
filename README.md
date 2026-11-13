@@ -8,7 +8,7 @@ For independent overnight coordination and the existing Codex fallback, see
 [the result handoff runbook](docs/coordinator-result-handoff.md). The coordinator
 must prove result retrieval before allocating work; a queued job is not completion.
 
-## v0.5.34: bind related regression generation to the edited source
+## v0.5.35: bind related regression generation to the edited source
 
 Version-4 test generation now receives the actual updated, approved source
 section as read-only reference data. This addresses the live pilot where a
