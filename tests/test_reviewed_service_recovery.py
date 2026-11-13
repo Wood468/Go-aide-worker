@@ -123,6 +123,23 @@ class ReviewedServiceRecovery(unittest.TestCase):
             with self.assertRaises(queue_scope.ScopeError):
                 q.main()
 
+    def test_reviewed_source_anchor_rejection_is_one_way_and_never_replayed(self):
+        paths = self.source_fixture()
+        anchor = {**self.record, 'failure_category': 'anchor'}
+        self.run_case(record=anchor)
+        for path in paths:
+            self.audit_path = path
+            self.run_case(record=anchor, branch=True, failure=True)
+        for record in ({**anchor, 'failure_stage': 'edit-test'},
+                       {**anchor, 'failure_stage': 'publish'},
+                       {**anchor, 'attempts': 2},
+                       {**anchor, 'failure_category': 'unknown'},
+                       {k:v for k,v in anchor.items() if k != 'task_sha256'}):
+            self.run_case(record=record, failure=True)
+        self.run_case(record=anchor, issue={**self.issue, 'labels': []}, failure=True)
+        self.run_case(record=anchor, env={**self.env,
+                      'WORKER_FILE_ALLOWLIST': json.dumps(paths[:1])}, failure=True)
+
     def test_reviewed_section_format_failure_is_one_way_with_full_scope_audit(self):
         paths = self.source_fixture()
         self.run_case()
