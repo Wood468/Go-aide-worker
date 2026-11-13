@@ -76,6 +76,8 @@ EDITOR_FAILURES = {
     b"Direct Gemini edit rejected: Selected file is invalid or oversized": "safety",
     b"Direct Gemini edit rejected: Exactly one validated edit target required": "safety",
     b"Direct Gemini edit rejected: JobError": "safety",
+    b"Direct Gemini edit rejected: Regression source context validation failed": "safety",
+    b"Direct Gemini edit rejected: Regression context exceeds limit": "safety",
 }
 # Safe finite HTTP status diagnostics; never copy response bodies/headers.
 for _status in (500, 502, 503, 504):
@@ -1364,8 +1366,10 @@ def perform(task, state, fetch=github_read, runner=child_run):
             runner([sys.executable, "/opt/worker/direct_editor.py"],
                    child_env(GEMINI_API_KEY=gemini, EDIT_FILES=relative,
                              GO_WORKER_QUEUE_EDIT="1",
-                             **({"WORKER_SECTION_CONTRACT": json.dumps(task["section"])}
-                                if version == 4 and i == 0 else {})))
+                             **({'WORKER_SECTION_CONTRACT': json.dumps(task['section'])}
+                                if version == 4 and i == 0 else
+                                {'WORKER_TEST_SOURCE_TASK': json.dumps(task), 'WORKER_TASK_SHA256': contract_sha}
+                                if version == 4 else {})))
         if version in (3, 4):
             stage = "cache-sync"
             # The model may never edit HTML/SW; apply exactly two deterministic

@@ -1,6 +1,7 @@
 """Credential-free 200 KB queue/editor/publisher acceptance and attack fixtures."""
 import copy
 import hashlib
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -42,7 +43,8 @@ class SectionPipeline(unittest.TestCase):
         for path in self.paths:
             target = self.root / path
             target.parent.mkdir(exist_ok=True)
-            target.write_bytes(self.original if path == self.paths[0] else b'// original\n')
+            target.write_bytes(self.original if path == self.paths[0] else
+                               b'// original test helper fixture\n' if path == self.paths[1] else b'// original\n')
         self.git('add', '.')
         self.git('commit', '-qm', 'baseline')
         self.sha = self.git('rev-parse', 'HEAD').strip()
@@ -169,7 +171,32 @@ class SectionPipeline(unittest.TestCase):
                                 section_contract=json.loads(env['WORKER_SECTION_CONTRACT']))
                     else:
                         self.assertNotIn('WORKER_SECTION_CONTRACT', env)
-                        (self.root / path).write_bytes(b'// updated test\n')
+                        self.assertEqual(json.loads(env['WORKER_TEST_SOURCE_TASK']), task)
+                        self.assertEqual(env['WORKER_TASK_SHA256'], q.task_fingerprint(task))
+                        def generate_test(key, prompt, selected, original, *, source_context):
+                            self.assertEqual(selected, self.paths[1])
+                            self.assertEqual(prompt, self.contract['instruction'])
+                            self.assertEqual(source_context, {'path': self.paths[0],
+                                'content': self.section.decode().replace('return 1;', 'return 2;')})
+                            self.assertNotIn('// unrelated', source_context['content'])
+                            def opener(request, timeout):
+                                payload = json.loads(request.data)
+                                text = payload['contents'][0]['parts'][0]['text']
+                                self.assertIn('"path": "public/dash.js"', text)
+                                self.assertIn(source_context['content'], text)
+                                self.assertNotIn('// unrelated', text)
+                                self.assertEqual(payload['generationConfig']['responseSchema']['properties']['path']['enum'],
+                                                 [self.paths[1]])
+                                class Reply(BytesIO): status = 200
+                                return Reply(json.dumps({'candidates': [{'content': {'parts': [{'text': json.dumps({
+                                    'path': selected, 'replacements': [{'old': original, 'new': '// updated test\n'}]})}]}}]}).encode())
+                            return direct_editor.generate(key, prompt, selected, original, opener,
+                                                          source_context=source_context)
+                        with patch.dict(os.environ, env, clear=True):
+                            direct_editor.edit(self.root, [path], self.contract['instruction'],
+                                env['GEMINI_API_KEY'], generate_test,
+                                test_source_task=json.loads(env['WORKER_TEST_SOURCE_TASK']),
+                                task_sha256=env['WORKER_TASK_SHA256'])
                     return b''
                 if command[:2] == ['node', '--check']:
                     self.assertNotIn('GEMINI_API_KEY', env)
