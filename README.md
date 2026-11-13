@@ -8,7 +8,7 @@ For independent overnight coordination and the existing Codex fallback, see
 [the result handoff runbook](docs/coordinator-result-handoff.md). The coordinator
 must prove result retrieval before allocating work; a queued job is not completion.
 
-## Pending improvement: reject impossible regression inputs before source editing
+## v0.5.36: reject impossible regression inputs before source editing
 
 V4 dispatch checks the existing test against the 40,000-byte combined context
 budget before requesting a source edit. It uses the smallest possible nonempty
