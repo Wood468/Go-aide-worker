@@ -1173,14 +1173,18 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
     # Check both explicit task linkage and branch/file content for any worker
     # PR with erased task references. Unknown metadata fails closed.
     verified_predecessors = {}
+    # Eight reviewed v4 PRs per page reduce anonymous audit requests as
+    # history grows, without raising the 180 KB response cap. Legacy fixed
+    # retirements retain their original page size.
+    page_size = 8 if baseline_task is not None else 5
     pr_history_complete = False
     last_created = None
     seen_prs = set()
     for page in range(1, 26):
         prs = fetch("https://api.github.com/repos/" + REPO +
-                    "/pulls?state=all&sort=created&direction=desc&per_page=5&page=" +
+                    "/pulls?state=all&sort=created&direction=desc&per_page=" + str(page_size) + "&page=" +
                     str(page))
-        if not isinstance(prs, list) or len(prs) > 5:
+        if not isinstance(prs, list) or len(prs) > page_size:
             raise QueueError("Rotation PR history unavailable")
         for pr in prs:
             if not isinstance(pr, dict):
@@ -1234,7 +1238,7 @@ def _retire_reviewed_edit_failure(path, fetch, number, title, contract_expected,
                     if predecessor['branch'] in verified_predecessors:
                         raise QueueError('Repeated predecessor branch')
                     verified_predecessors[predecessor['branch']] = predecessor
-        if pr_history_complete or len(prs) < 5:
+        if pr_history_complete or len(prs) < page_size:
             pr_history_complete = True
             break
     if not pr_history_complete:

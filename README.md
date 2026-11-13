@@ -14,6 +14,26 @@ see [Agent delegation v1](docs/AGENT_DELEGATION.md), tracked by
 [issue #68](https://github.com/Wood468/Go-aide-worker/issues/68). The clean-run
 pilot starts at 0/3; draft publication alone is not acceptance.
 
+## v0.5.40: reduce reviewed audit requests within the same response cap
+
+The measured full audit for a banked source-prewrite failure grew to about 65
+public API reads as the repository accumulated 121 newer PRs. That exceeds the
+unauthenticated 60-request allowance even at a fresh quota window.
+
+Reviewed v4 source-prewrite disposition now scans eight PRs per page. The
+complete chronological history, duplicate/order validation, cutoff and all
+separate file, branch, approval and real-ledger proofs remain mandatory. The
+180,000-byte cap is unchanged; any oversized page still stops without a ledger
+transition. At most 25 pages are permitted (200 rows); incomplete history still
+blocks. Legacy fixed retirements keep their five-row pages.
+
+A bounded-reader profile of the complete current history fit in 16 pages, with
+its largest response 141,691 bytes. Request count still depends on live history
+and branches: this reduces requests, not a guarantee against future rate limits.
+The recovery action checks the actual ledger itself before any transition; a
+separate filesystem reader is not required. No replay, credential expansion,
+new task approval or automatic source integration is introduced.
+
 ## v0.5.39: keep ancestry evidence within the audit response cap
 
 The first installed v0.5.38 no-retry disposition stopped safely because the
