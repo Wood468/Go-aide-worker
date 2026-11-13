@@ -12,6 +12,7 @@ import time
 import signal
 import threading
 import queue_scope
+import edit_protocol
 from queue_scope import SOURCE_TEST_PAIRS
 import urllib.error
 import urllib.request
@@ -82,6 +83,8 @@ EDITOR_FAILURES = {
 # Safe finite HTTP status diagnostics; never copy response bodies/headers.
 for _status in (500, 502, 503, 504):
     EDITOR_FAILURES[("Direct Gemini edit rejected: Gemini request rejected: service-" + str(_status)).encode("ascii")] = "service-" + str(_status)
+for _category in edit_protocol.CORRECTABLE | edit_protocol.TERMINAL:
+    EDITOR_FAILURES[edit_protocol.ERROR_PREFIX + _category.encode('ascii')] = _category
 EDITOR_CATEGORIES = frozenset(EDITOR_FAILURES.values()) | {"unknown", "timeout"}
 
 
@@ -102,7 +105,8 @@ class PublisherChildError(QueueError):
 
 
 class EditorChildError(QueueError):
-    def __init__(self, category):
+    def __init__(self, category, correction=None):
+        self.correction = correction if correction in edit_protocol.CORRECTABLE else None
         if category not in EDITOR_CATEGORIES:
             category = "unknown"
         self.category = category
@@ -274,9 +278,13 @@ def child_run(command, env):
         result = subprocess.run(command, cwd=ROOT, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                 timeout=360, check=False)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         if command[1:2] == ["/opt/worker/direct_editor.py"]:
-            raise EditorChildError("timeout") from None
+            correction = None
+            if env.get('WORKER_PREWRITE_CORRECTION') == '1':
+                correction = next((c for c in edit_protocol.CORRECTABLE
+                                   if exc.stdout == edit_protocol.marker(c) + b'\n'), None)
+            raise EditorChildError("timeout", correction) from None
         raise QueueError("Worker child did not finish") from None
     except OSError:
         raise QueueError("Worker child did not finish") from None
@@ -284,8 +292,14 @@ def child_run(command, env):
         if command[1:2] == ["/opt/worker/direct_editor.py"]:
             # Exact-match fixed, pre-reviewed error lines ONLY. All other output
             # is untrusted and reduced to 'unknown'; nothing raw is logged.
-            category = EDITOR_FAILURES.get(result.stdout.strip(), "unknown")
-            raise EditorChildError(category)
+            try:
+                correction = edit_protocol.parse_output(result.stdout, EDITOR_FAILURES)
+                category = EDITOR_FAILURES[result.stdout.removesuffix(b'\n').split(b'\n')[-1]]
+            except ValueError:
+                category, correction = 'unknown', None
+            if correction and env.get('WORKER_PREWRITE_CORRECTION') != '1':
+                category, correction = 'unknown', None
+            raise EditorChildError(category, correction)
         if command[1:2] == ["/opt/worker/publisher.py"]:
             # Publisher itself emits a single fixed marker. Never parse or
             # expose arbitrary stdout, API response text or exception details.
@@ -296,6 +310,11 @@ def child_run(command, env):
                 category = "unknown"
             raise PublisherChildError(category)
         raise QueueError("Worker child failed")
+    if command[1:2] == ['/opt/worker/direct_editor.py'] and env.get('WORKER_PREWRITE_CORRECTION') == '1':
+        try:
+            edit_protocol.parse_output(result.stdout, EDITOR_FAILURES, success=True)
+        except ValueError:
+            raise EditorChildError('unknown') from None
     return result.stdout[:500]
 
 
@@ -1252,15 +1271,25 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
     state = read_ledger(path)
     record = state.get(str(receipt['issue']))
     required = {'state', 'attempts', 'failure_stage', 'failure_category'}
-    source_syntax = (isinstance(record, dict) and set(record) == {'state', 'attempts', 'failure_stage', 'task_sha256'}
+    history_present = isinstance(record, dict) and 'model_corrections' in record
+    history = record.get('model_corrections') if isinstance(record, dict) else None
+    if history_present:
+        try:
+            edit_protocol.validate_history(history)
+        except (ValueError, TypeError):
+            raise QueueError('Failure not eligible for reviewed isolation') from None
+    record_fields = set(record) - {'model_corrections'} if isinstance(record, dict) else set()
+    source_syntax = (isinstance(record, dict) and record_fields == {'state', 'attempts', 'failure_stage', 'task_sha256'}
                      and record.get('failure_stage') == 'syntax-check')
     source_prewrite = (isinstance(record, dict) and record.get('failure_stage') == 'edit-source'
-                     and record.get('failure_category') in {'format', 'anchor'})
+                     and record.get('failure_category') in ({'format'} | edit_protocol.CORRECTABLE))
     service = (isinstance(record, dict) and record.get('failure_stage') == 'edit-single'
                and record.get('failure_category') in {'service', 'service-500', 'service-502', 'service-503', 'service-504'})
-    if (not isinstance(record, dict) or (set(record) not in (required, required | {'task_sha256'}) and not source_syntax)
+    if (not isinstance(record, dict) or (record_fields not in (required, required | {'task_sha256'}) and not source_syntax)
             or record.get('state') != 'needs-review' or type(record.get('attempts')) is not int
             or record['attempts'] != 1 or not (source_prewrite or source_syntax or service)
+            or (history_present and not (source_prewrite or source_syntax))
+            or (history_present and source_prewrite and (len(history) != 1 or history[0]['stage'] != 'edit-source'))
             or ('task_sha256' not in record and ((source_prewrite or source_syntax) or LEGACY_SERVICE_REVIEW.get(receipt['issue']) != receipt['task_sha256']))
             or ('task_sha256' in record and record['task_sha256'] != receipt['task_sha256'])):
         raise QueueError('Failure not eligible for reviewed isolation')
@@ -1290,7 +1319,8 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
         required_review_label=REVIEW_LABEL,
         retired_details={'task_sha256': receipt['task_sha256'], 'failure_stage': record['failure_stage'],
                          'failure_category': record.get('failure_category', 'syntax'),
-                         **({'review_syntax': diagnostics} if diagnostics else {})})
+                         **({'review_syntax': diagnostics} if diagnostics else {}),
+                         **({'model_corrections': history} if history else {})})
 
 
 def preflight_regression_budget(root, task):
@@ -1330,6 +1360,7 @@ def perform(task, state, fetch=github_read, runner=child_run):
     state[key] = {"state": "started", "attempts": attempts, "task_sha256": contract_sha}
     save_ledger(state)
     stage = "refresh"
+    corrections = []
     try:
         runner([sys.executable, "/opt/worker/refresh_repo.py"], child_env())
         stage = "target-validation"
@@ -1385,13 +1416,23 @@ def perform(task, state, fetch=github_read, runner=child_run):
                 temp.unlink()
         for i, relative in enumerate(edit_paths):
             stage = "edit-source" if multi and i == 0 else "edit-test" if multi else "edit-single"
-            runner([sys.executable, "/opt/worker/direct_editor.py"],
+            out = runner([sys.executable, "/opt/worker/direct_editor.py"],
                    child_env(GEMINI_API_KEY=gemini, EDIT_FILES=relative,
                              GO_WORKER_QUEUE_EDIT="1",
+                             **({'WORKER_PREWRITE_CORRECTION': '1'} if version == 4 else {}),
                              **({'WORKER_SECTION_CONTRACT': json.dumps(task['section'])}
                                 if version == 4 and i == 0 else
                                 {'WORKER_TEST_SOURCE_TASK': json.dumps(task), 'WORKER_TASK_SHA256': contract_sha}
                                 if version == 4 else {})))
+            if version == 4:
+                try:
+                    category = edit_protocol.parse_output(out, EDITOR_FAILURES, success=True)
+                except ValueError:
+                    raise EditorChildError('unknown') from None
+                if category:
+                    corrections.append({'stage': stage, 'category': category})
+                    state[key]['model_corrections'] = list(corrections)
+                    save_ledger(state)
         if version in (3, 4):
             stage = "cache-sync"
             # The model may never edit HTML/SW; apply exactly two deterministic
@@ -1419,6 +1460,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
                                     WORKER_ISSUE_NUMBER=key,
                                     WORKER_FILE_ALLOWLIST=json.dumps(global_scope),
                                     WORKER_DISPATCH_SCOPE=json.dumps(paths))
+        if corrections:
+            publication_env['WORKER_MODEL_CORRECTIONS'] = json.dumps(edit_protocol.validate_history(corrections))
         if version == 4:
             publication_env["WORKER_SECTION_CONTRACT"] = json.dumps(task["section"])
         if multi:
@@ -1432,6 +1475,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
         number = int(matched.group(1))
         state[key] = {"state": "submitted", "pr": number, "attempts": attempts}
         state[key]["task_sha256"] = contract_sha
+        if corrections:
+            state[key]['model_corrections'] = corrections
         save_ledger(state)
         print("Submitted issue #" + key + " as draft PR #" + str(number), flush=True)
         return True
@@ -1443,6 +1488,10 @@ def perform(task, state, fetch=github_read, runner=child_run):
         if ((isinstance(exc, EditorChildError) and stage in {"edit-single", "edit-source", "edit-test"})
                 or (isinstance(exc, PublisherChildError) and stage == "publish")):
             failure["failure_category"] = exc.category
+        if isinstance(exc, EditorChildError) and exc.correction and stage in {'edit-source', 'edit-test'}:
+            corrections.append({'stage': stage, 'category': exc.correction})
+        if corrections:
+            failure['model_corrections'] = edit_protocol.validate_history(corrections)
         failure["task_sha256"] = contract_sha
         state[key] = failure
         save_ledger(state)

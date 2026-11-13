@@ -14,6 +14,35 @@ see [Agent delegation v1](docs/AGENT_DELEGATION.md), tracked by
 [issue #68](https://github.com/Wood468/Go-aide-worker/issues/68). The clean-run
 pilot starts at 0/3; draft publication alone is not acceptance.
 
+## v0.5.37: bounded prewrite response correction
+
+Approved v4 source and related-test children can each request **one** correction
+of a malformed structured reply or nonunique/overlapping exact patch anchor.
+The second request retains the immutable original file, instruction, selected
+path, response schema and approved source reference. It adds only a fixed
+validation category; rejected model text is never echoed, retained or logged.
+All ordinary byte, section, path and content checks still run before atomic
+replacement. A second invalid reply leaves the task in its one-attempt review
+hold; this is not a task replay, test-repair loop or automatic merge.
+
+Provider refusals, safety blocks, token limits, auth/quota/model/network errors,
+timeouts, response/patch budgets, unsafe content and no-op edits stop normally.
+Each generation permits the existing single HTTP 5xx transport retry, so each
+child is bounded to two generations and at most four HTTP requests. Manual and
+legacy/v2/v3 work keep their previous single-generation behavior.
+
+The queue strictly validates content-free child receipts and records optional
+ordered `model_corrections` entries in both submitted and failed ledger rows.
+V4 draft descriptions report the correction count and fixed reasons. Reviewed
+source-prewrite isolation accepts the new finite diagnostics and preserves its
+correction history, while retaining the existing approval-withdrawal, immutable
+contract, full scope and remote-history audit requirements. Historical generic
+`format` failures remain generic; their missing subtype is never inferred.
+
+This release does not itself pass the three-task independent acceptance gate.
+Install with the worker idle and queue/edit/publish disabled, then use a fresh,
+reviewed candidate after disposing of any previous failure or draft.
+
 ## v0.5.36: reject impossible regression inputs before source editing
 
 V4 dispatch checks the existing test against the 40,000-byte combined context

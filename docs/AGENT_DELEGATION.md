@@ -38,7 +38,9 @@ Do not count saved time until preparation, review and any repair time are measur
    change a hash under an old approval. Only this role changes live worker
    configuration and task approvals under the owner's authorization.
 3. **GO Aider:** perform one approved attempt and publish a draft. It cannot
-   broaden its own scope, approve itself, merge or deploy.
+   broaden its own scope, approve itself, merge or deploy. With v0.5.37, each
+   source/test child may make one bounded prewrite format/anchor correction
+   within that same attempt; the result receipt must disclose each correction.
 4. **Independent reviewer:** inspect the exact draft head, execute the actual
    changed function with malformed and valid inputs, verify preserved behavior
    and source/cache byte scope, and check all required latest-head CI. Report
@@ -85,7 +87,9 @@ lower-bound preflight does not guarantee the actual updated reference fits.
 Record the task/issue and immutable task fingerprint; approved source hash and
 base commit; draft URL and exact head; changed paths; CI run IDs and conclusions;
 independent review verdict; manual interventions; failure stage/category, if any;
-and the coordinator's disposition. Track preparation, dispatch-to-draft and
+and the coordinator's disposition. Include the optional `model_corrections`
+entries (stage and fixed category), distinguishing an automatic prewrite
+correction from manual source/test repair. Track preparation, dispatch-to-draft and
 review/repair time separately. Keep credentials and private model replies out of
 the receipt.
 

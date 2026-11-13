@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'addon'))
 import direct_editor
+import edit_protocol
 import publisher
 import queue_worker as q
 import queue_scope
@@ -197,7 +198,8 @@ class SectionPipeline(unittest.TestCase):
                                 env['GEMINI_API_KEY'], generate_test,
                                 test_source_task=json.loads(env['WORKER_TEST_SOURCE_TASK']),
                                 task_sha256=env['WORKER_TASK_SHA256'])
-                    return b''
+                    self.assertEqual(env['WORKER_PREWRITE_CORRECTION'], '1')
+                    return b'Direct Gemini selected-file edit completed\n'
                 if command[:2] == ['node', '--check']:
                     self.assertNotIn('GEMINI_API_KEY', env)
                     self.assertNotIn('GITHUB_TOKEN', env)
@@ -235,6 +237,158 @@ class SectionPipeline(unittest.TestCase):
             self.assertEqual(edits, self.paths[:2])
             self.assertEqual(len(publications), 1)
             self.assertEqual(q.read_ledger(ledger)['701']['state'], 'submitted')
+
+    def perform_with_receipts(self, receipts, failed_path=None):
+        """Use the real editor receipt parser with isolated fake child processes."""
+        task = q.parse_task(self.issue)
+        state, edits, publications, commands = {}, [], [], []
+        with tempfile.TemporaryDirectory() as folder:
+            runtime = Path(folder)
+            ledger = runtime / 'ledger.json'
+            save = q.save_ledger
+
+            def runner(command, env):
+                commands.append(command)
+                if command[-1].endswith('refresh_repo.py'):
+                    return b''
+                if command[-1].endswith('direct_editor.py'):
+                    path = env['EDIT_FILES']
+                    edits.append(path)
+                    self.assertEqual(env['WORKER_PREWRITE_CORRECTION'], '1')
+                    self.assertNotIn('GITHUB_TOKEN', env)
+                    result = subprocess.CompletedProcess(command, int(path == failed_path), receipts[path], b'')
+                    with patch.object(q.subprocess, 'run', return_value=result):
+                        output = q.child_run(command, env)
+                    target = self.root / path
+                    target.write_bytes(self.original.replace(b'return 1;', b'return 2;')
+                                       if path == self.paths[0] else b'// updated regression\n')
+                    return output
+                if command[:2] == ['node', '--check']:
+                    return b''
+                if command[-1].endswith('publisher.py'):
+                    self.assertNotIn('GEMINI_API_KEY', env)
+                    publications.append(env)
+                    return b'Created draft PR #702'
+                self.fail('Unexpected child')
+
+            def cache_apply(*args):
+                for path in self.paths[2:]:
+                    (self.root / path).write_bytes(b'// deterministic cache\n')
+
+            def fetch(url):
+                self.assertTrue(url.endswith('/issues/701'))
+                return self.issue
+
+            with patch.object(q, 'ROOT', runtime), patch.object(q, 'CHECKOUT', self.root), \
+                 patch.object(q, 'save_ledger', lambda value: save(value, ledger)), \
+                 patch('cache_contract.apply', side_effect=cache_apply), \
+                 patch.dict(os.environ, {'GEMINI_API_KEY': 'private-fixture', 'GITHUB_TOKEN': 'private-fixture',
+                                         'WORKER_FILE_ALLOWLIST': json.dumps(self.paths)}, clear=True):
+                if failed_path:
+                    with self.assertRaises(q.EditorChildError):
+                        q.perform(task, state, fetch=fetch, runner=runner)
+                else:
+                    self.assertTrue(q.perform(task, state, fetch=fetch, runner=runner))
+                durable = q.read_ledger(ledger)
+                self.assertEqual(state, durable)
+                self.assertEqual(durable['701']['attempts'], 1)
+                self.assertEqual(durable['701']['task_sha256'], q.task_fingerprint(task))
+                # Neither submitted nor failed attempts can be replayed.
+                self.assertFalse(q.perform(task, state, fetch=fetch,
+                                           runner=lambda *_: self.fail('Replayed task')))
+            return durable['701'], edits, publications, commands
+
+    def test_source_and_test_corrections_reach_publication_and_durable_success_receipt(self):
+        history = [{'stage': 'edit-source', 'category': 'anchor'},
+                   {'stage': 'edit-test', 'category': 'format-json'}]
+        receipts = {self.paths[i]: edit_protocol.marker(entry['category']) + b'\n' +
+                    edit_protocol.SUCCESS + b'\n' for i, entry in enumerate(history)}
+        record, edits, publications, _ = self.perform_with_receipts(receipts)
+        self.assertEqual(record['state'], 'submitted')
+        self.assertEqual(record['pr'], 702)
+        self.assertEqual(record['model_corrections'], history)
+        self.assertEqual(edits, self.paths[:2])
+        self.assertEqual(len(publications), 1)
+        self.assertEqual(json.loads(publications[0]['WORKER_MODEL_CORRECTIONS']), history)
+        self.assertEqual(json.loads(publications[0]['WORKER_APPROVED_PATHS']), self.paths)
+
+    def test_first_child_correction_failure_is_durable_and_stops_test_and_publisher(self):
+        receipt = edit_protocol.marker('format-envelope') + b'\nDirect Gemini edit rejected: format-json\n'
+        record, edits, publications, commands = self.perform_with_receipts(
+            {self.paths[0]: receipt}, failed_path=self.paths[0])
+        self.assertEqual(record['state'], 'needs-review')
+        self.assertEqual(record['failure_stage'], 'edit-source')
+        self.assertEqual(record['failure_category'], 'format-json')
+        self.assertEqual(record['model_corrections'], [{'stage': 'edit-source', 'category': 'format-envelope'}])
+        self.assertEqual(edits, self.paths[:1])
+        self.assertEqual(publications, [])
+        self.assertEqual(len(commands), 2)
+        self.assertEqual((self.root / self.paths[0]).read_bytes(), self.original)
+
+    def test_second_child_failure_retains_ordered_source_and_test_corrections(self):
+        receipts = {self.paths[0]: edit_protocol.marker('anchor') + b'\n' + edit_protocol.SUCCESS + b'\n',
+                    self.paths[1]: edit_protocol.marker('format-json') + b'\nDirect Gemini edit rejected: anchor\n'}
+        original_test = (self.root / self.paths[1]).read_bytes()
+        record, edits, publications, commands = self.perform_with_receipts(receipts, failed_path=self.paths[1])
+        self.assertEqual(record['state'], 'needs-review')
+        self.assertEqual(record['failure_stage'], 'edit-test')
+        self.assertEqual(record['failure_category'], 'anchor')
+        self.assertEqual(record['model_corrections'], [{'stage': 'edit-source', 'category': 'anchor'},
+                                                      {'stage': 'edit-test', 'category': 'format-json'}])
+        self.assertEqual(edits, self.paths[:2])
+        self.assertEqual(publications, [])
+        self.assertEqual(len(commands), 3)
+        self.assertEqual((self.root / self.paths[1]).read_bytes(), original_test)
+
+    def correction_publication_env(self):
+        task = q.parse_task(self.issue)
+        return {'WORKER_ISSUE_NUMBER': '701', 'WORKER_APPROVED_PATHS': json.dumps(self.paths),
+                'WORKER_FILE_ALLOWLIST': json.dumps(self.paths),
+                'WORKER_DISPATCH_SCOPE': json.dumps(self.paths),
+                'WORKER_SECTION_CONTRACT': json.dumps(self.contract),
+                'WORKER_TASK_SHA256': q.task_fingerprint(task)}
+
+    def test_publisher_discloses_valid_correction_history_in_draft_body(self):
+        self.changed()
+        history = [{'stage': 'edit-source', 'category': 'anchor'},
+                   {'stage': 'edit-test', 'category': 'format-json'}]
+        env = {**self.correction_publication_env(), 'WORKER_MODEL_CORRECTIONS': json.dumps(history)}
+        drafts = []
+
+        def request(token, method, path, payload=None):
+            if path == '/issues/701': return self.issue
+            if path == '/git/ref/heads/main': return {'object': {'sha': self.sha}}
+            if path.startswith('/git/commits/'): return {'tree': {'sha': 'base-tree'}}
+            if path in ('/git/blobs', '/git/trees', '/git/commits'): return {'sha': 'object'}
+            if path == '/git/refs': return {}
+            if path == '/pulls':
+                drafts.append(payload)
+                return {'number': 702, 'draft': True}
+            self.fail('Unexpected API operation')
+
+        with patch.dict(os.environ, env, clear=True), patch('cache_contract.verify'):
+            self.assertEqual(publisher.publish(self.root, 'fixture', request, 'abcdef123456'), 702)
+        self.assertEqual(len(drafts), 1)
+        self.assertTrue(drafts[0]['draft'])
+        body = drafts[0]['body']
+        self.assertIn('Prewrite model corrections: 2.', body)
+        self.assertIn('edit-source: anchor; edit-test: format-json', body)
+        self.assertIn('No automatic merge or deployment.', body)
+
+    def test_invalid_publisher_correction_history_fails_before_any_remote_call(self):
+        source = {'stage': 'edit-source', 'category': 'anchor'}
+        test = {'stage': 'edit-test', 'category': 'format-json'}
+        histories = [None, [], [source, source], [test, source], [source, test, test],
+                     [{**source, 'raw_reply': 'private-provider-content'}],
+                     [{'stage': 'edit-single', 'category': 'anchor'}],
+                     [{'stage': 'edit-source', 'category': 'private-provider-content'}]]
+        for history in histories:
+            with self.subTest(history=history):
+                env = {**self.correction_publication_env(), 'WORKER_MODEL_CORRECTIONS': json.dumps(history)}
+                with patch.dict(os.environ, env, clear=True):
+                    with self.assertRaises(publisher.PublishError):
+                        publisher.publish(self.root, 'fixture',
+                                          lambda *_: self.fail('Invalid receipt reached remote API'))
 
     def test_impossible_regression_budget_stops_before_edit_and_preserves_one_attempt(self):
         task = q.parse_task(self.issue)

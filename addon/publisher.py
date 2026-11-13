@@ -182,6 +182,16 @@ def api(token, method, endpoint, payload=None):
 def publish(workspace, token, request=api, branch_id=None):
     if not isinstance(token, str) or not token.strip():
         raise PublishError("Missing GitHub token")
+    # Validate correction receipts before any GitHub request/object/ref write.
+    corrections = None
+    if 'WORKER_MODEL_CORRECTIONS' in os.environ:
+        import edit_protocol
+        try:
+            corrections = edit_protocol.validate_history(json.loads(os.environ['WORKER_MODEL_CORRECTIONS']))
+        except (ValueError, TypeError):
+            raise PublishError('Invalid correction receipt') from None
+        if not os.environ.get('WORKER_SECTION_CONTRACT') or not os.environ.get('WORKER_APPROVED_PATHS'):
+            raise PublishError('Correction receipt requires bounded task')
     section = None
     section_task = None
     if os.environ.get('WORKER_SECTION_CONTRACT') is not None:
@@ -243,6 +253,8 @@ def publish(workspace, token, request=api, branch_id=None):
                 or task["paths"] != approved
                 or queue_worker.task_fingerprint(task) != os.environ.get("WORKER_TASK_SHA256")):
             raise PublishError("Approved GitHub task was revoked or changed")
+    if corrections and (not section_task or section_task.get('version') != 4):
+        raise PublishError('Correction receipt requires bounded task')
     ref = request(token, "GET", "/git/ref/heads/main")
     base_sha = ref["object"]["sha"]
     if base_sha != local_head:
@@ -280,7 +292,10 @@ def publish(workspace, token, request=api, branch_id=None):
                   "Worker: proposed isolated changes (review required)"),
         "head": branch, "base": "main", "draft": True,
         "body": ("Source task: #" + source_issue + "\n\n" if source_issue else "") +
-                "Automated isolated worker proposal. Requires human review and CI. No automatic merge or deployment."})
+                "Automated isolated worker proposal. Requires human review and CI. No automatic merge or deployment." +
+                ("\n\nPrewrite model corrections: " + str(len(corrections)) + ". " +
+                 "; ".join(e['stage'] + ": " + e['category'] for e in corrections) + "."
+                 if corrections else "\n\nPrewrite model corrections: 0." if section else "")})
     if not pr.get("draft") or not isinstance(pr.get("number"), int):
         raise PublishError("Draft PR confirmation missing")
     return pr["number"]

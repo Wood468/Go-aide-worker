@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 
 import job_runner
+import edit_protocol
 from text_safety import unsafe_controls
 
 MODEL_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent"
@@ -18,11 +19,20 @@ MAX_FILE_BYTES = 100_000  # Never exceed the independent publisher's per-file ca
 MAX_OUTPUT = 100_000
 MAX_REPLACEMENTS = 3
 MAX_REPLACEMENT_CHARS = 12_000
+SECRET_MARKERS = (b'github_pat_', b'ghp_', b'gho_', b'AIza', b'-----BEGIN PRIVATE KEY-----')
 MAX_TOUCHED_CHARS = 24_000
 
 
 class DirectEditError(Exception):
     pass
+
+
+class ModelReplyError(DirectEditError):
+    def __init__(self, category, message):
+        if category not in edit_protocol.CORRECTABLE | edit_protocol.TERMINAL:
+            raise ValueError('Invalid model reply category')
+        self.category = category
+        super().__init__(message)
 
 
 def apply_replacements(original, replacements):
@@ -32,13 +42,13 @@ def apply_replacements(original, replacements):
     silently change the anchor used by another replacement.
     """
     if not isinstance(replacements, list) or not 1 <= len(replacements) <= MAX_REPLACEMENTS:
-        raise DirectEditError("Invalid large-file replacement count")
+        raise ModelReplyError("format-patch", "Invalid large-file replacement count")
     ranges = []
     touched = 0
     for item in replacements:
         if (not isinstance(item, dict) or set(item) != {"old", "new"}
                 or not isinstance(item["old"], str) or not isinstance(item["new"], str)):
-            raise DirectEditError("Invalid large-file replacement")
+            raise ModelReplyError("format-patch", "Invalid large-file replacement")
         old, new = item["old"], item["new"]
         if (len(old) < 12 or not old.strip() or old == new
                 or len(old) > MAX_REPLACEMENT_CHARS
@@ -46,7 +56,7 @@ def apply_replacements(original, replacements):
             raise DirectEditError("Large-file replacement exceeds scope")
         first = original.find(old)
         if first < 0 or original.find(old, first + 1) >= 0:
-            raise DirectEditError("Large-file replacement anchor is not unique")
+            raise ModelReplyError("anchor", "Large-file replacement anchor is not unique")
         pos = original.index(old)
         ranges.append((pos, pos + len(old), new))
         touched += len(old) + len(new)
@@ -54,14 +64,14 @@ def apply_replacements(original, replacements):
         raise DirectEditError("Large-file edits exceed bounded scope")
     ordered = sorted(ranges)
     if any(a[0] < b[1] for b, a in zip(ordered, ordered[1:])):
-        raise DirectEditError("Overlapping large-file replacements")
+        raise ModelReplyError("anchor", "Overlapping large-file replacements")
     updated = original
     for start, end, new in reversed(ordered):
         updated = updated[:start] + new + updated[end:]
     return updated
 
 
-def generate(key, prompt, path, original, opener=urllib.request.urlopen, *, source_context=None):
+def generate(key, prompt, path, original, opener=urllib.request.urlopen, *, source_context=None, correction_callback=None):
     if not isinstance(key, str) or not key.strip():
         raise DirectEditError("Gemini key missing")
     if len(prompt) > 3000 or not prompt.strip():
@@ -118,17 +128,34 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen, *, sour
         properties['content'] = {'type': 'STRING'}
     schema = {'type': 'OBJECT', 'properties': properties, 'required': list(properties),
               'propertyOrdering': list(properties)}
-    body = json.dumps({
+    payload = {
         "contents": [{"role": "user", "parts": [{"text": task}]}],
         "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
                              "maxOutputTokens": 8192, "responseSchema": schema}
-    }).encode()
-    req = urllib.request.Request(MODEL_URL, data=body, method="POST", headers={
+    }
+    for round_number in range(2 if correction_callback is not None else 1):
+        result = request_model(key, payload, opener)
+        try:
+            return decode_reply(result, path, original, large)
+        except ModelReplyError as exc:
+            if (round_number or correction_callback is None
+                    or exc.category not in edit_protocol.CORRECTABLE):
+                raise
+            # Same immutable task/schema/context; never echo a rejected reply.
+            correction_callback(exc.category)
+            payload['contents'][0]['parts'] = [{'text': task +
+                '\nVALIDATION FEEDBACK: ' + exc.category +
+                '. Return a complete valid response under the original schema. '
+                'Copy exact unique old fragments from CURRENT FILE. '
+                'All original task and path limits still apply.'}]
+
+
+def request_model(key, payload, opener):
+    req = urllib.request.Request(MODEL_URL, data=json.dumps(payload).encode(), method="POST", headers={
         "x-goog-api-key": key, "Content-Type": "application/json",
         "User-Agent": "go-aider-single-file-editor"})
-    # At most one transport retry, and ONLY for an HTTP 5xx service outage.
-    # Never retry quota/auth/model errors, timeouts or malformed model output.
-    # No file mutation happens until after a complete validated JSON reply.
+    # One transport retry per generation round, ONLY for an HTTP 5xx outage.
+    # At most two rounds (four HTTP calls), before any file mutation.
     for attempt in range(2):
         try:
             with opener(req, timeout=45) as response:
@@ -137,8 +164,7 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen, *, sour
                 raw_result = response.read(MAX_OUTPUT + 1)
                 if len(raw_result) > MAX_OUTPUT:
                     raise DirectEditError("Gemini response exceeds limit")
-                result = json.loads(raw_result)
-            break
+                return json.loads(raw_result)
         except urllib.error.HTTPError as e:
             if e.code in (500, 502, 503, 504) and attempt == 0:
                 time.sleep(1)
@@ -150,25 +176,74 @@ def generate(key, prompt, path, original, opener=urllib.request.urlopen, *, sour
             raise DirectEditError("Gemini request rejected: " + category) from None
         except (urllib.error.URLError, TimeoutError, OSError, ValueError):
             raise DirectEditError("Gemini connection or response error") from None
+
+
+def decode_reply(result, path, original, large):
+    # A provider refusal or truncated generation is never a format repair.
+    if not isinstance(result, dict):
+        raise ModelReplyError('format-envelope', 'Model returned invalid structured edit')
+    feedback = result.get('promptFeedback')
+    if isinstance(feedback, dict) and feedback.get('blockReason'):
+        raise ModelReplyError('provider-block', 'Provider blocked generation')
+    if 'error' in result:
+        raise ModelReplyError('provider-error', 'Provider rejected generation')
+    candidates = result.get('candidates')
+    if isinstance(candidates, list):
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            finish = item.get('finishReason')
+            if finish == 'MAX_TOKENS':
+                raise ModelReplyError('output-limit', 'Provider output token limit')
+            if finish not in (None, 'STOP'):
+                raise ModelReplyError('provider-block', 'Provider blocked generation')
+    if not isinstance(candidates, list) or len(candidates) != 1 or not isinstance(candidates[0], dict):
+        raise ModelReplyError('format-envelope', 'Model returned invalid structured edit')
+    candidate = candidates[0]
+    content = candidate.get('content')
+    parts = content.get('parts') if isinstance(content, dict) else None
+    if not isinstance(parts, list):
+        raise ModelReplyError('format-envelope', 'Model returned invalid structured edit')
+    texts = [part['text'] for part in parts if isinstance(part, dict)
+             and part.get('thought') is not True and isinstance(part.get('text'), str)]
+    if not texts or not ''.join(texts).strip():
+        raise ModelReplyError('format-text', 'Model returned invalid structured edit')
+    text = ''.join(texts)
     try:
-        parts = result['candidates'][0]['content']['parts']
-        if not isinstance(parts, list):
-            raise ValueError('Invalid parts')
-        texts = [part['text'] for part in parts if isinstance(part, dict)
-                 and part.get('thought') is not True and isinstance(part.get('text'), str)]
-        candidate = ''.join(texts)
-        updated = json.loads(candidate)
-    except (KeyError, IndexError, TypeError, ValueError) as e:
-        raise DirectEditError("Model returned invalid structured edit") from None
-    if not isinstance(updated, dict) or updated.get("path") != path:
-        raise DirectEditError("Model returned unapproved path or content")
+        raw_text = text.encode('utf-8')
+    except UnicodeError:
+        raise DirectEditError('Edited file failed content safety checks') from None
+    if unsafe_controls(raw_text) or any(secret in raw_text for secret in SECRET_MARKERS):
+        raise DirectEditError('Edited file failed content safety checks')
+    try:
+        updated = json.loads(text)
+    except ValueError:
+        raise ModelReplyError('format-json', 'Model returned invalid structured edit') from None
+    def unsafe_reply(value):
+        if isinstance(value, str):
+            try:
+                raw = value.encode('utf-8')
+            except UnicodeError:
+                return True
+            return unsafe_controls(raw) or any(m in raw for m in SECRET_MARKERS)
+        if isinstance(value, dict):
+            return any(unsafe_reply(k) or unsafe_reply(v) for k, v in value.items())
+        if isinstance(value, list):
+            return any(unsafe_reply(v) for v in value)
+        return False
+    if unsafe_reply(updated):
+        raise DirectEditError('Edited file failed content safety checks')
+    if not isinstance(updated, dict):
+        raise ModelReplyError('format-shape', 'Model returned unapproved path or content')
+    if updated.get('path') != path:
+        raise ModelReplyError('format-path', 'Model returned unapproved path or content')
     if large:
-        if set(updated) != {"path", "replacements"}:
-            raise DirectEditError("Model returned invalid large-file response")
-        return apply_replacements(original, updated["replacements"])
-    if set(updated) != {"path", "content"} or not isinstance(updated["content"], str):
-        raise DirectEditError("Model returned unapproved path or content")
-    return updated["content"]
+        if set(updated) != {'path', 'replacements'}:
+            raise ModelReplyError('format-shape', 'Model returned invalid large-file response')
+        return apply_replacements(original, updated['replacements'])
+    if set(updated) != {'path', 'content'} or not isinstance(updated['content'], str):
+        raise ModelReplyError('format-shape', 'Model returned unapproved path or content')
+    return updated['content']
 
 
 def regression_source_context(workspace, test_path, prompt, task, task_sha256):
@@ -208,7 +283,7 @@ def regression_source_context(workspace, test_path, prompt, task, task_sha256):
 
 
 def edit(workspace, selected, prompt, key, generator=generate, section_contract=None,
-         test_source_task=None, task_sha256=None):
+         test_source_task=None, task_sha256=None, correction_callback=None):
     workspace = Path(workspace)
     if workspace.is_symlink() or not workspace.is_dir() or (workspace / ".git").is_symlink() or not (workspace / ".git").is_dir():
         raise DirectEditError("Invalid isolated checkout")
@@ -242,6 +317,12 @@ def edit(workspace, selected, prompt, key, generator=generate, section_contract=
             original = source.read()
     except UnicodeError:
         raise DirectEditError("Only UTF-8 text files are supported") from None
+    if correction_callback is not None:
+        if os.environ.get('GO_WORKER_QUEUE_EDIT') != '1' or (section_contract is None and source_context is None):
+            raise DirectEditError('Correction requires bounded queue task')
+        original_generator = generator
+        def generator(*args, **kwargs):
+            return original_generator(*args, **kwargs, correction_callback=correction_callback)
     if section_contract is not None:
         updated = section_editor.propose_task(key, relative, original.encode('utf-8'),
                                                section_contract, generator).decode('utf-8')
@@ -252,8 +333,7 @@ def edit(workspace, selected, prompt, key, generator=generate, section_contract=
     if not isinstance(updated, str) or not updated or updated == original:
         raise DirectEditError("No content change produced")
     raw = updated.encode("utf-8")
-    if len(raw) > limit or unsafe_controls(raw) or any(marker in raw for marker in
-                (b"github_pat_", b"ghp_", b"-----BEGIN PRIVATE KEY-----")):
+    if len(raw) > limit or unsafe_controls(raw) or any(marker in raw for marker in SECRET_MARKERS):
         raise DirectEditError("Edited file failed content safety checks")
     # Atomic replacement of a regular file; never run generated code.
     with tempfile.NamedTemporaryFile(mode="wb", dir=target.parent, prefix=".worker-edit-",
@@ -311,7 +391,13 @@ def main():
             test_source = json.loads(os.environ['WORKER_TEST_SOURCE_TASK'])
             if not isinstance(test_source, dict):
                 raise DirectEditError('Invalid regression source contract')
+        correction = os.environ.get('WORKER_PREWRITE_CORRECTION')
+        if correction is not None and (correction != '1' or os.environ.get('GO_WORKER_QUEUE_EDIT') != '1'
+                                       or (section is None and test_source is None)):
+            raise DirectEditError('Correction requires bounded queue task')
         edit(job_runner.WORKSPACE, selection, job.get("prompt", ""), os.environ.get("GEMINI_API_KEY", ""),
+             **({'correction_callback': lambda category: print(edit_protocol.marker(category).decode('ascii'), flush=True)}
+                if correction == '1' else {}),
              **({"section_contract": section} if section is not None else {}),
              **({"test_source_task": test_source, "task_sha256": os.environ.get('WORKER_TASK_SHA256')}
                 if test_source is not None else {}))
@@ -319,7 +405,7 @@ def main():
     except (DirectEditError, job_runner.JobError, ValueError, OSError, TypeError) as e:
         # These errors are controlled, but never expose arbitrary exception content.
         print("Direct Gemini edit rejected: " +
-              (str(e) if isinstance(e, DirectEditError) else type(e).__name__), flush=True)
+              (e.category if isinstance(e, ModelReplyError) else str(e) if isinstance(e, DirectEditError) else type(e).__name__), flush=True)
         raise SystemExit(2)
 
 
