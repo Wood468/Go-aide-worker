@@ -10,6 +10,14 @@ Inspect the live task ledger, current main, complete open-PR file ownership and
 the coordinator reservation on worker issue #46. Resume an existing allocation
 before selecting another. Never reset or replay retired or needs-review rows.
 
+On v0.5.35 and later, preflight the related-test context budget before approving
+a v4 task: existing test UTF-8 bytes plus the UTF-8 bytes of the JSON-encoded
+`{"path": source_path, "content": updated_section}` must fit within 40,000.
+Use the intended updated section and leave room for its bounded change; choose
+smaller anchors when needed. Do not silently truncate either input. The editor
+independently enforces this limit before the related-test provider request;
+source generation may already have completed when a later input is rejected.
+
 Discover the working Home Assistant tools by description, not just the old
 connector prefix. A missing dedicated Codex tool does not mean its documented
 HA service is unavailable. Use `ha_list_services(domain="codex_cli",

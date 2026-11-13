@@ -24,7 +24,8 @@ source hash and unchanged bytes outside the approved section, and supplies only
 the updated section, never the large file's unrelated prefix or suffix. Only
 the selected test remains editable. Existing test text plus encoded read-only
 source reference must fit within 40,000 UTF-8 bytes; oversized or unsafe context
-fails before the provider request. The source-edit stage, manual edits and
+fails before the related-test provider request. Preflight this combined budget
+before approval and leave room for the intended section change. The source-edit stage, manual edits and
 legacy/v2/v3 tasks retain their previous behavior.
 
 This grounds the model request; it does not prove arbitrary generated tests are
