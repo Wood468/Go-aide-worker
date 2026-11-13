@@ -8,6 +8,16 @@ For independent overnight coordination and the existing Codex fallback, see
 [the result handoff runbook](docs/coordinator-result-handoff.md). The coordinator
 must prove result retrieval before allocating work; a queued job is not completion.
 
+## Pending improvement: reject impossible regression inputs before source editing
+
+V4 dispatch checks the existing test against the 40,000-byte combined context
+budget before requesting a source edit. It uses the smallest possible nonempty
+encoded source reference, so it rejects only tests that cannot fit even if the
+source section shrinks. Invalid UTF-8 tests also stop at target validation.
+The actual updated source reference is still verified and budgeted by the test
+editor. Failures retain the normal one-attempt review hold; no retries or ledger
+resets are introduced.
+
 ## v0.5.35: bind related regression generation to the edited source
 
 Version-4 test generation now receives the actual updated, approved source

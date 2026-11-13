@@ -1293,6 +1293,26 @@ def isolate_reviewed_service_failure(path=LEDGER, fetch=github_read):
                          **({'review_syntax': diagnostics} if diagnostics else {})})
 
 
+def preflight_regression_budget(root, task):
+    """Reject impossible v4 test budgets before any model request or source write.
+
+    A one-byte reference is a lower bound, not a prediction of generated source.
+    The test child still checks the actual encoded updated section independently.
+    """
+    import section_editor
+    minimum = json.dumps({'path': task['paths'][0], 'content': 'x'},
+                         ensure_ascii=False).encode('utf-8')
+    limit = section_editor.MAX_SECTION_BYTES - len(minimum)
+    with (Path(root) / task['paths'][1]).open('rb') as source:
+        original = source.read(limit + 1)
+    if len(original) > limit:
+        raise QueueError('Regression test cannot fit context budget')
+    try:
+        original.decode('utf-8')
+    except UnicodeError:
+        raise QueueError('Regression test is not UTF-8') from None
+
+
 def perform(task, state, fetch=github_read, runner=child_run):
     if "WORKER_FILE_ALLOWLIST" in os.environ and not queue_scope.permits(
             task, queue_scope.parse(os.environ["WORKER_FILE_ALLOWLIST"])):
@@ -1336,6 +1356,8 @@ def perform(task, state, fetch=github_read, runner=child_run):
                     raise QueueError("Test task must edit exactly one existing file")
             elif target.exists():
                 raise QueueError("Documentation task must create exactly one new file")
+        if version == 4:
+            preflight_regression_budget(CHECKOUT, task)
         stage = "approval-precheck"
         if multi and parse_task(fetch("https://api.github.com/repos/" + REPO +
                                        "/issues/" + key)) != task:

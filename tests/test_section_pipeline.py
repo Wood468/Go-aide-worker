@@ -236,6 +236,52 @@ class SectionPipeline(unittest.TestCase):
             self.assertEqual(len(publications), 1)
             self.assertEqual(q.read_ledger(ledger)['701']['state'], 'submitted')
 
+    def test_impossible_regression_budget_stops_before_edit_and_preserves_one_attempt(self):
+        task = q.parse_task(self.issue)
+        for raw in (b'x' * section_editor.MAX_SECTION_BYTES,
+                    ('é' * 20_000).encode(), b'invalid UTF-8: \xff'):
+            with self.subTest(size=len(raw)), tempfile.TemporaryDirectory() as folder:
+                runtime = Path(folder)
+                ledger = runtime / 'ledger.json'
+                target = self.root / self.paths[1]
+                target.write_bytes(raw)
+                self.git('add', self.paths[1])
+                self.git('commit', '-qm', 'regression budget fixture')
+                state, calls = {}, []
+                def runner(command, env):
+                    calls.append(command)
+                    self.assertTrue(command[-1].endswith('refresh_repo.py'))
+                    return b''
+                def fetch(url):
+                    if url == q.ISSUES_URL: return [self.issue]
+                    self.fail('Unexpected remote operation')
+                save = q.save_ledger
+                with patch.object(q, 'ROOT', runtime), patch.object(q, 'CHECKOUT', self.root), \
+                     patch.object(q, 'save_ledger', lambda value: save(value, ledger)), \
+                     patch.dict(os.environ, {'GEMINI_API_KEY': 'fixture', 'GITHUB_TOKEN': 'fixture'}, clear=True):
+                    with self.assertRaises(q.QueueError):
+                        q.perform(task, state, fetch=fetch, runner=runner)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual((self.root / self.paths[0]).read_bytes(), self.original)
+                self.assertEqual(target.read_bytes(), raw)
+                self.assertFalse((runtime / 'job.json').exists())
+                self.assertEqual(state['701']['state'], 'needs-review')
+                self.assertEqual(state['701']['attempts'], 1)
+                self.assertEqual(state['701']['failure_stage'], 'target-validation')
+                self.assertEqual(state['701']['task_sha256'], q.task_fingerprint(task))
+
+    def test_regression_budget_lower_bound_accepts_boundary_and_uses_encoded_bytes(self):
+        task = q.parse_task(self.issue)
+        overhead = len(json.dumps({'path': self.paths[0], 'content': 'x'},
+                                  ensure_ascii=False).encode())
+        limit = section_editor.MAX_SECTION_BYTES - overhead
+        target = self.root / self.paths[1]
+        target.write_bytes(b'x' * limit)
+        q.preflight_regression_budget(self.root, task)
+        target.write_bytes(b'x' * (limit + 1))
+        with self.assertRaises(q.QueueError):
+            q.preflight_regression_budget(self.root, task)
+
     def test_readonly_actual_node_diagnosis_emits_no_generated_source_or_credentials(self):
         import contextlib
         import io
